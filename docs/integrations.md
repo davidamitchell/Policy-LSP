@@ -92,51 +92,73 @@ Zed uses a `~/.config/zed/settings.json` LSP configuration. Add a custom languag
 
 ---
 
-## Claude Code (MCP)
+## Claude Code
 
-Add GOV-LSP as an MCP tool so Claude can check file compliance during a session.
+> **Note:** GOV-LSP is an LSP server, not an MCP server. Direct `mcpServers` connection is not currently supported — that requires the MCP wrapper in backlog W-0012. The integration described here uses Claude Code's native filesystem tools to call the engine indirectly.
 
-In your project's `.mcp.json` (or `~/.config/claude/mcp.json`):
+**What works today — invoke via CLI in a Claude session:**
+
+Claude Code can evaluate files directly by running the binary with the OPA CLI:
+
+```bash
+# Build first
+go build -o /usr/local/bin/gov-lsp ./cmd/gov-lsp
+
+# Evaluate a file using the OPA CLI directly against the policies
+opa eval \
+  -d /path/to/policies \
+  --input /dev/stdin \
+  'data.governance[_].deny' <<'EOF'
+{"filename":"lower_case.md","extension":".md","path":"file:///ws/lower_case.md","file_contents":"# hello"}
+EOF
+```
+
+**Planned integration (W-0012):** Once the MCP wrapper is built, you will add it to `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "gov-lsp": {
-      "command": "/path/to/gov-lsp",
-      "args": ["--policies", "/path/to/policies"],
-      "env": {
-        "GOV_LSP_POLICIES": "/path/to/policies"
-      }
+      "command": "/path/to/gov-lsp-mcp",
+      "args": ["--policies", "/path/to/policies"]
     }
   }
 }
 ```
 
-Once connected, Claude will surface violations as tool results when opening or editing files. Example prompt: *"Check this file against the governance policies"* — Claude will see the diagnostics in its tool output and can apply fixes.
-
-**Using the workspace policies automatically:**
-
-If your project ships policies in a `policies/` directory at the repo root, Claude Code respects the `.mcp.json` in the workspace root, so policies are always project-specific.
+The MCP wrapper (`gov-lsp-mcp`) will expose a `check_file` tool that accepts `{path, contents}` and returns a list of violations — without going through the LSP protocol.
 
 ---
 
-## GitHub Copilot Agent (Workspace)
+## GitHub Copilot Agent
 
-Add to `.github/mcp.json`:
+> **Note:** GOV-LSP is an LSP server, not an MCP server. Listing `gov-lsp` in an `mcpServers` block will not work — the binary speaks LSP protocol, not MCP `tools/call` protocol. The MCP wrapper in backlog W-0012 will solve this.
+
+**What works today — Copilot reads LSP diagnostics from the VSCode Problems panel:**
+
+When GOV-LSP is running as a VSCode extension (see [VSCode section above](#vscode)), GitHub Copilot Agent in VSCode can read the Problems panel diagnostics and incorporate them into its edits. You don't need MCP for this — Copilot already sees all LSP diagnostics from installed extensions.
+
+Workflow:
+1. Build and install the VSCode extension wrapper (see [VSCode](#vscode))
+2. Open the project in VSCode — GOV-LSP starts automatically and populates the Problems panel
+3. In Copilot Agent chat: *"Fix the policy violations shown in the Problems panel"*
+4. Copilot reads the diagnostics (including `data.value` for suggested renames) and can apply the fixes
+
+**Planned integration (W-0012):** Once the MCP wrapper is built, it can be added to `.github/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "gov-lsp": {
       "type": "stdio",
-      "command": "/path/to/gov-lsp",
+      "command": "/path/to/gov-lsp-mcp",
       "args": ["--policies", "${workspaceFolder}/policies"]
     }
   }
 }
 ```
 
-Copilot Agent will include GOV-LSP diagnostics when editing files in the workspace. The `data` field on each diagnostic carries the fix payload that Copilot can apply via `workspace/applyEdit`.
+This will let Copilot Agent call `check_file` as a tool during agentic sessions outside of an editor context.
 
 ---
 

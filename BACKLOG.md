@@ -183,18 +183,20 @@ Lowering the local setup barrier means contributors (human or AI) can open the r
 
 ## W-0012
 
-status: needing_refinement
+status: ready
 created: 2026-02-28
 updated: 2026-02-28
 
 ### Outcome
 
-GOV-LSP can be used as a tool in an MCP (Model Context Protocol) server configuration so that Claude or another AI agent can request a compliance check for a given file path and receive back a structured list of violations.
+A `gov-lsp-mcp` binary exists (or a `--mode mcp` flag on the existing binary) that implements the MCP stdio transport. It exposes a single tool `check_file` with schema `{path: string, contents: string}` and returns `[{id, message, level, fix}]`. An AI agent that adds it to `mcpServers` in `.mcp.json` can call `check_file` and receive structured violations. A test verifies the MCP handshake and a single `tools/call` invocation against the `filenames.rego` policy.
 
 ### Context
 
-The spec lists MCP integration as a key use case: "Use this as a tool in your MCP config so Claude can 'ask' the policy engine for compliance checks during a chat session." The exact MCP tool schema and transport mechanism need to be decided.
+GOV-LSP is an LSP server and MCP is a different protocol (`tools/list` / `tools/call` JSON-RPC, no `Content-Length` framing). Agents like Claude Code and GitHub Copilot Agent use MCP, not LSP, as their tool protocol. Without a wrapper, they cannot call the policy engine directly.
+
+The implementation calls `engine.Evaluate()` directly (bypassing the LSP layer entirely) so the wrapper is thin — roughly 100 lines of MCP handshake + JSON serialisation. The policies directory is configured the same way as the LSP server (`--policies` flag or `GOV_LSP_POLICIES` env var).
 
 ### Notes
 
-Needs a decision on whether to expose GOV-LSP directly as an MCP tool (via a thin wrapper) or build a separate `gov-lsp-mcp` binary. Requires research into MCP tool call format and how to map it to the existing engine API.
+ADR needed before implementation: decide whether this is a separate binary (`gov-lsp-mcp`) or a mode flag on the existing binary (`gov-lsp --mode mcp`). Separate binary keeps the LSP binary's dependency surface clean. Mode flag simplifies distribution.

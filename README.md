@@ -56,41 +56,13 @@ end
 lspconfig.gov_lsp.setup({})
 ```
 
-### Claude Code (MCP tool)
+### Claude Code
 
-Add to your `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "gov-lsp": {
-      "command": "/path/to/gov-lsp",
-      "args": ["--policies", "/path/to/policies"],
-      "env": {
-        "GOV_LSP_POLICIES": "/path/to/policies"
-      }
-    }
-  }
-}
-```
-
-Claude will surface violations as tool results when it opens or edits files.
+> GOV-LSP is an LSP server, not an MCP server. Direct `mcpServers` connection requires the MCP wrapper in backlog **W-0012** (not yet built). See [`docs/integrations.md`](docs/integrations.md) for the current workaround.
 
 ### GitHub Copilot Agent
 
-Add to `.github/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "gov-lsp": {
-      "type": "stdio",
-      "command": "/path/to/gov-lsp",
-      "args": ["--policies", "/path/to/policies"]
-    }
-  }
-}
-```
+> Same caveat as Claude Code — direct MCP connection requires W-0012. **What works today:** run GOV-LSP as a VSCode extension; Copilot Agent reads diagnostics from the Problems panel without any MCP config. See [`docs/integrations.md`](docs/integrations.md).
 
 ### Docker sidecar
 

@@ -26,22 +26,24 @@ MCP server configs live in two files:
 | `brave_search` | Web search for LSP spec, OPA docs, Go stdlib |
 | `github` | GitHub API (issues, PRs, releases) |
 
-### Connecting GOV-LSP itself as an MCP tool
+### Connecting GOV-LSP as an MCP tool (W-0012, not yet built)
 
-To use the server as an MCP compliance tool for another agent:
+> **Current status:** GOV-LSP is an LSP server; it speaks `Content-Length`-framed JSON-RPC, not MCP `tools/call` protocol. You cannot add it directly to `mcpServers` — the MCP client will attempt an MCP handshake that GOV-LSP does not understand.
+
+The planned MCP wrapper (`gov-lsp-mcp`) in W-0012 will expose a `check_file` tool that calls `engine.Evaluate()` directly and returns violations as structured JSON. Once built, it will be configured as:
 
 ```json
 {
   "mcpServers": {
     "gov-lsp": {
-      "command": "/path/to/gov-lsp",
+      "command": "/path/to/gov-lsp-mcp",
       "args": ["--policies", "/path/to/policies"]
     }
   }
 }
 ```
 
-See [`docs/integrations.md`](integrations.md) for per-agent setup details.
+See [`docs/integrations.md`](integrations.md) for what works today with each editor and agent.
 
 ---
 
@@ -129,6 +131,27 @@ Review this text for hollow filler language and remove it:
 ```
 
 The skill flags phrases like "seamlessly", "robust", "comprehensive", "leverages", and any sentence that says something without meaning it.
+
+---
+
+## Integrating GOV-LSP with another repository (e.g. Research repo)
+
+The fastest path to enforcing policies in another repo today is:
+
+1. **Copy or symlink the policies directory.** Add `policies/` to the target repo with the Rego rules you want to enforce. Or point `GOV_LSP_POLICIES` at the central policy directory — policies are runtime-loaded, not compiled in.
+
+2. **Build the binary and add it to your editor config.** See [`docs/integrations.md`](integrations.md) for the editor-specific setup (Neovim, Zed, VSCode extension).
+
+3. **Run the smoke test against the target repo's files** to confirm policies are loading:
+
+   ```bash
+   GOV_LSP_POLICIES=/path/to/research-repo/policies \
+     bash /path/to/gov-lsp/scripts/smoke_test.sh /path/to/gov-lsp
+   ```
+
+4. **For Copilot Agent in VSCode:** Install the GOV-LSP extension in VSCode. Open the target repo. Copilot reads the Problems panel diagnostics automatically — no MCP config needed.
+
+5. **For agentic use outside an editor (future):** Wait for W-0012 (`gov-lsp-mcp` wrapper). Track it at `BACKLOG.md#W-0012`.
 
 ---
 
