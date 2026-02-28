@@ -224,3 +224,27 @@ See `research/lsap/README.md` for protocol analysis, comparison with MCP, and a 
 ### Notes
 
 Blocked on LSAP protocol stability (currently v1.0.0-alpha, Python SDK only, no Go SDK). Implement after W-0012 is done and the LSAP spec reaches a stable release or a Go SDK is available. The engine call and policy schema will not need to change — this is purely a new transport adapter.
+
+---
+
+## W-0014
+
+status: ready
+created: 2026-02-28
+updated: 2026-02-28
+
+### Outcome
+
+A `gov-lsp-governance` agent skill exists and installs into Claude Code (`~/.claude/skills/`), Gemini (`~/.gemini/skills/`), Codex, and any `agentskills.io`-compatible agent tool. The skill exposes a single command: `check-governance <file_path>`. The agent invokes it on changed files; it calls `gov-lsp check <file>` and returns a Markdown policy report listing violations and fix suggestions. An agent with the skill installed can enforce governance rules without an editor, without an LSP client, and without MCP.
+
+### Context
+
+The `lsp-client/lsp-skill` project (see `research/lsap/README.md`, section "The `lsp-skill` Ecosystem") demonstrates the pattern: a SKILL.md instruction file + a CLI subcommand. The skill installs into the same `~/.claude/skills/` directory already used by the `davidamitchell/Skills` submodule in this repo.
+
+GOV-LSP already produces the right output — violation messages, severity, and self-contained fix suggestions. The skill is a thin adapter: a SKILL.md that documents the command interface, plus a `check` subcommand on the `gov-lsp-mcp` binary (from W-0012) that accepts a file path and prints Markdown.
+
+This is the most direct path to autonomous agent governance enforcement without an editor — simpler than a full LSAP implementation (W-0013) and complementary to MCP (W-0012).
+
+### Notes
+
+Depends on W-0012 for the `gov-lsp check <file>` CLI subcommand. The skill itself is ~50 lines of Markdown plus the command registration. No Go SDK or protocol stabilisation required. Write an ADR before implementation to decide whether the skill ships in this repo or as a separate `gov-lsp-skill` release artifact.

@@ -2,14 +2,18 @@
 
 **Question:** Does the Language Server Agent Protocol (LSAP) help solve the gap between GOV-LSP's LSP interface and what AI coding agents need?
 
-**Status:** Research complete. Recommendation and backlog item produced.
+**Status:** Research complete (updated with full ecosystem scan). Recommendation and backlog item produced.
 
 **Sources:**
 - [LSAP GitHub](https://github.com/lsp-client/LSAP) — official spec and Python SDK (v1.0.0-alpha, MIT licence)
+- [lsp-client ecosystem](https://lsp-client.github.io/) — website, blog, and architecture overview
 - [Designing LSAP](https://lsp-client.github.io/blog/designing-lsap/) — protocol design rationale
+- [lsp-skill GitHub](https://github.com/lsp-client/lsp-skill) — pre-built LSAP skill installable into Claude Code, Gemini, Codex
+- [Announcing LSP Analysis Skill](https://lsp-client.github.io/blog/announcing-lsp-analysis-skill/) — announcement post
 - [Agent Client Protocol](https://blog.promptlayer.com/agent-client-protocol-the-lsp-for-ai-coding-agents/) — ACP, a similar initiative by PromptLayer/Zed
 - [LSP-AI](https://github.com/SilasMarvin/lsp-ai) — AI-powered language server as LSP backend
 - [MCP Language Server](https://mcplane.com/mcp_servers/mcp-language) — proxy LSP features through MCP
+- [Building a Least-Privilege AI Agent Gateway for Infrastructure](https://www.infoq.com/articles/building-ai-agent-gateway-mcp/) — OPA + MCP agent gateway pattern
 
 ---
 
@@ -130,6 +134,65 @@ An agent consuming this response knows exactly what to do without parsing LSP di
 
 ---
 
+## The `lsp-skill` Ecosystem (Key New Finding)
+
+The lsp-client organisation ships more than just the LSAP protocol. The **`lsp-skill`** project is a pre-built agent skill that installs LSAP-powered code intelligence directly into agent tools:
+
+```
+lsp-client/lsp-skill  →  Claude Code (~/.claude/skills/)
+                       →  Gemini    (~/.gemini/skills/)
+                       →  Codex     (~/.codex/skills/)
+                       →  OpenCode  (~/.config/opencode/skill/)
+```
+
+Installation for Claude Code:
+```bash
+mkdir -p ~/.claude/skills/lsp-code-analysis
+TMP=$(mktemp -d)
+curl -sSL https://github.com/lsp-client/lsp-skill/releases/latest/download/lsp-code-analysis.zip -o "$TMP/lsp-code-analysis.zip"
+unzip -o "$TMP/lsp-code-analysis.zip" -d ~/.claude/skills/
+```
+
+**This is the same `~/.claude/skills/` path used by the `davidamitchell/Skills` submodule already in this repo.** The skills system in GOV-LSP and the LSAP skill system are the same mechanism.
+
+### What `lsp-skill` provides (code intelligence)
+
+The `lsp-code-analysis` skill gives agents:
+- Semantic navigation (definitions, references, implementations)
+- Cross-file dependency tracing
+- Type-aware inspection (signatures, docs) without reading implementation code
+- Structural code outline (high-level map without reading full files)
+- Supports Go (via `gopls`), Python, Rust, TypeScript, Java, Deno
+
+### What `lsp-skill` does NOT provide (policy governance)
+
+`lsp-skill` is a **code intelligence** skill. It bridges `gopls` (or other standard language servers) to agents. It does not evaluate Rego policies, report governance violations, or suggest compliance fixes.
+
+**GOV-LSP is a different kind of language server.** It is a policy enforcement server, not a code intelligence server. The `lsp-skill` and GOV-LSP are **complementary**:
+
+| Skill | What it does | Source |
+|---|---|---|
+| `lsp-code-analysis` (lsp-skill) | Navigate code: definitions, references, types | `gopls` via LSAP |
+| `gov-lsp-skill` (to be built) | Enforce governance: naming, structure, content | GOV-LSP via LSAP |
+
+### The `gov-lsp-skill` Opportunity
+
+The `lsp-skill` architecture shows the exact pattern for a **`gov-lsp-skill`**:
+
+1. The skill is a Markdown file (SKILL.md) that tells the agent what commands are available and how to invoke them.
+2. The commands call a CLI tool (`lsp-cli` in the reference implementation; could be `gov-lsp check` for GOV-LSP).
+3. The CLI returns Markdown-formatted results the agent reads directly.
+
+A `gov-lsp-skill` would let any Claude Code, Gemini, or Codex agent run:
+```
+Please run the GOV-LSP policy check on the files I just changed.
+```
+...and receive a Markdown report without any LSP client, VSCode, or editor being involved.
+
+This is **simpler than W-0012 (MCP)** for skill-aware agents and **simpler than W-0013 (full LSAP)** for non-skill-aware agents. It is a viable W-0014.
+
+---
+
 ## Related Protocols in the Landscape
 
 ### Agent Client Protocol (ACP)
@@ -161,21 +224,30 @@ This is a meaningful but contained piece of work — roughly the same scope as W
 
 1. **Proceed with W-0012 (MCP wrapper) as planned.** It has the widest agent support today (Copilot Agent, Claude Code both support MCP natively).
 
-2. **Add W-0013: LSAP cognitive endpoint.** Watch the LSAP spec stabilise (currently v1.0.0-alpha). When a Go-idiomatic path exists (the protocol schema is stable and a Go SDK or sufficient examples exist), implement a `check_policy` LSAP capability alongside the MCP tool. The engine call is identical; only the request/response shape differs.
+2. **Add W-0014: `gov-lsp-skill` — LSAP agent skill.** This is the most actionable near-term step. Modelled on `lsp-client/lsp-skill`, a `gov-lsp-skill` is a SKILL.md file + a `gov-lsp check` CLI subcommand. Once W-0012 ships the engine CLI path, the skill is ~50 lines of Markdown instructions plus the command wrapper. Installs into Claude Code at `~/.claude/skills/gov-lsp-governance/` — the same mechanism already used by `davidamitchell/Skills` in this repo.
 
-3. **GOV-LSP is well-positioned.** Unlike `gopls` or a type-checker, GOV-LSP's output is already semantically rich — policy violation messages, severity, and fix suggestions are all natural language. Wrapping them in LSAP's Markdown-first format requires almost no interpretation. This makes GOV-LSP a natural early adopter of LSAP once the protocol matures.
+3. **Add W-0013: Full LSAP cognitive endpoint.** Watch the LSAP spec stabilise (currently v1.0.0-alpha). When a Go-idiomatic path exists (the protocol schema is stable and a Go SDK or sufficient examples exist), implement a `check_policy` LSAP capability alongside the MCP tool. The engine call is identical; only the request/response shape differs.
 
-4. **The `diagnostic.data` design was the right call.** Both MCP and LSAP require the fix to be self-contained in the response. The existing schema (type, value) maps directly to both protocols without changes to the engine or the policy files.
+4. **GOV-LSP is well-positioned.** Unlike `gopls` or a type-checker, GOV-LSP's output is already semantically rich — policy violation messages, severity, and fix suggestions are all natural language. Wrapping them in LSAP's Markdown-first format requires almost no interpretation. This makes GOV-LSP a natural early adopter of LSAP once the protocol matures.
+
+5. **The `diagnostic.data` design was the right call.** Both MCP and LSAP require the fix to be self-contained in the response. The existing schema (type, value) maps directly to both protocols without changes to the engine or the policy files.
 
 ---
 
-## Backlog Item (proposed)
+## Backlog Items (proposed)
 
-See `BACKLOG.md` — add W-0013 once W-0012 is complete:
+See `BACKLOG.md`:
+
+**W-0013** (already added): LSAP cognitive endpoint — blocked on protocol stability.
+
+**W-0014** (new): `gov-lsp-skill` — agent skill for governance checks:
 
 ```
-W-0013 | LSAP cognitive endpoint
-Status: backlog (pending LSAP Go SDK or protocol stability)
-Outcome: gov-lsp exposes a `check_policy` LSAP capability; any LSAP-aware agent can call it with a file path + contents and receive a Markdown policy report.
-Depends on: W-0012 (engine already exposed), LSAP protocol reaching beta stability.
+W-0014 | gov-lsp-skill: LSAP agent skill
+Status: ready (after W-0012 ships gov-lsp check CLI)
+Outcome: A `gov-lsp-governance` skill installs into Claude Code (~/.claude/skills/),
+         Gemini (~/.gemini/skills/), and any agentskills.io-compatible agent tool.
+         Running "check governance on changed files" triggers the skill, which calls
+         `gov-lsp check <file>` and returns a Markdown policy report.
+Depends on: W-0012 (need the check CLI subcommand from the MCP binary).
 ```
