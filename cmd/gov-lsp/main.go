@@ -1,13 +1,18 @@
 // gov-lsp is a governance Language Server that enforces project policies
 // defined as Rego rules and reports violations as LSP Diagnostics.
 //
-// Usage:
+// Usage (LSP server mode):
 //
 //	gov-lsp [--policies <dir>]
 //
-// The server reads JSON-RPC messages from stdin and writes responses to stdout.
-// Diagnostic notifications are published to the client via
-// textDocument/publishDiagnostics.
+// Usage (batch check mode):
+//
+//	gov-lsp check [--policies <dir>] [--format text|json] [path...]
+//
+// In server mode the server reads JSON-RPC messages from stdin and writes
+// responses to stdout.  In check mode it walks the given paths, evaluates each
+// file against all loaded policies, prints violations to stdout, and exits 1 if
+// any violations are found (0 if clean).
 package main
 
 import (
@@ -17,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -29,14 +35,146 @@ import (
 )
 
 func main() {
-	// Determine default policy directory relative to the binary.
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "."
+	if len(os.Args) > 1 && os.Args[1] == "check" {
+		os.Exit(checkMain(os.Args[2:]))
 	}
-	defaultPolicies := filepath.Join(filepath.Dir(exe), "policies")
+	runServer()
+}
 
-	policiesDir := flag.String("policies", defaultPolicies, "directory containing .rego policy files")
+// ---- check subcommand --------------------------------------------------------
+
+// CheckResult holds a single policy violation produced by the check subcommand.
+type CheckResult struct {
+	File    string                 `json:"file"`
+	ID      string                 `json:"id"`
+	Level   string                 `json:"level"`
+	Message string                 `json:"message"`
+	Fix     map[string]interface{} `json:"fix,omitempty"`
+}
+
+// checkMain parses flags and executes the "check" subcommand.
+func checkMain(args []string) int {
+	checkFlags := flag.NewFlagSet("check", flag.ContinueOnError)
+	policiesDir := checkFlags.String("policies", defaultPoliciesDir(), "directory containing .rego policy files")
+	format := checkFlags.String("format", "text", "output format: text or json")
+
+	if err := checkFlags.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "gov-lsp check: %v\n", err)
+		return 2
+	}
+
+	if env := os.Getenv("GOV_LSP_POLICIES"); env != "" {
+		*policiesDir = env
+	}
+
+	paths := checkFlags.Args()
+	if len(paths) == 0 {
+		paths = []string{"."}
+	}
+
+	eng, err := engine.New(*policiesDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gov-lsp check: loading policies: %v\n", err)
+		return 1
+	}
+
+	count, err := runCheck(eng, paths, *format, os.Stdout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gov-lsp check: %v\n", err)
+		return 1
+	}
+	if count > 0 {
+		return 1
+	}
+	return 0
+}
+
+// runCheck walks paths, evaluates each file against eng, and writes results to w.
+// It returns the total number of violations found.
+func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (int, error) {
+	ctx := context.Background()
+	var results []CheckResult
+	checked := 0
+
+	for _, root := range paths {
+		if err := filepath.WalkDir(root, func(path string, d iofs.DirEntry, err error) error {
+			if err != nil {
+				return nil // skip unreadable entries
+			}
+			if d.IsDir() {
+				// Skip hidden directories such as .git and .github.
+				if strings.HasPrefix(filepath.Base(path), ".") && path != root {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil // skip unreadable files
+			}
+
+			filename := filepath.Base(path)
+			ext := filepath.Ext(filename)
+
+			in := engine.Input{
+				Filename:     filename,
+				Extension:    ext,
+				Path:         path,
+				FileContents: string(content),
+			}
+
+			violations, evalErr := eng.Evaluate(ctx, in)
+			if evalErr != nil {
+				return nil // log and continue; don't abort the walk
+			}
+
+			checked++
+			for _, v := range violations {
+				results = append(results, CheckResult{
+					File:    path,
+					ID:      v.ID,
+					Level:   v.Level,
+					Message: v.Message,
+					Fix:     v.Fix,
+				})
+			}
+			return nil
+		}); err != nil {
+			return len(results), fmt.Errorf("walking %s: %w", root, err)
+		}
+	}
+
+	switch format {
+	case "json":
+		data, err := json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			return len(results), err
+		}
+		fmt.Fprintln(w, string(data))
+	default: // text
+		for _, r := range results {
+			fmt.Fprintf(w, "%s: [%s] %s\n", r.File, r.ID, r.Message)
+			if r.Fix != nil {
+				fixType, _ := r.Fix["type"].(string)
+				fixVal, _ := r.Fix["value"].(string)
+				if fixType != "" && fixVal != "" {
+					fmt.Fprintf(w, "  Fix (%s): %s\n", fixType, fixVal)
+				}
+			}
+		}
+		fmt.Fprintf(w, "\nChecked %d file(s). %d violation(s) found.\n", checked, len(results))
+	}
+
+	return len(results), nil
+}
+
+// ---- server mode -------------------------------------------------------------
+
+// runServer starts the LSP server, reading JSON-RPC messages from stdin and
+// writing responses and notifications to stdout.
+func runServer() {
+	policiesDir := flag.String("policies", defaultPoliciesDir(), "directory containing .rego policy files")
 	flag.Parse()
 
 	// Allow override via environment variable.
@@ -94,6 +232,15 @@ func main() {
 			writerMu.Unlock()
 		}
 	}
+}
+
+// defaultPoliciesDir returns the default policies directory, adjacent to the binary.
+func defaultPoliciesDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "policies"
+	}
+	return filepath.Join(filepath.Dir(exe), "policies")
 }
 
 // readMessage reads one LSP message from r.

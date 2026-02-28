@@ -19,14 +19,29 @@ Optional:
 ## Build
 
 ```bash
-# Build binary to repo root
+# Build binary using Make (preferred)
+make build
+
+# Or directly with go
 go build -o gov-lsp ./cmd/gov-lsp
 
 # Or install to $GOPATH/bin
 go install ./cmd/gov-lsp
 
-# Verify
+# Verify — shows both the server mode and check subcommand
 ./gov-lsp --help
+```
+
+### Available Make targets
+
+```bash
+make help          # print all available targets
+make build         # compile gov-lsp binary
+make test          # run all unit tests
+make vet           # run go vet
+make smoke         # build + run end-to-end smoke test
+make check-policy  # batch policy check against the whole repo (self-governance demo)
+make clean         # remove built binary
 ```
 
 ### Static binary (for distribution)
@@ -34,6 +49,34 @@ go install ./cmd/gov-lsp
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -ldflags="-s -w" -o gov-lsp-linux-amd64 ./cmd/gov-lsp
+```
+
+---
+
+## CLI modes
+
+GOV-LSP has two operating modes in the same binary:
+
+### Server mode (default)
+```bash
+# Start the LSP server — reads JSON-RPC from stdin, writes to stdout
+gov-lsp [--policies <dir>]
+```
+Used by editor extensions and LSP clients.
+
+### Check mode (batch)
+```bash
+# Evaluate all files under the given paths and print violations
+gov-lsp check [--policies <dir>] [--format text|json] [path...]
+```
+Used for CI pipelines, agent scripts, and manual spot-checks. Exit code: `0` = clean, `1` = violations found.
+
+```bash
+# Example: check the whole repo
+GOV_LSP_POLICIES=./policies ./gov-lsp check .
+
+# JSON output (same schema as Diagnostic.data — machine-readable)
+GOV_LSP_POLICIES=./policies ./gov-lsp check --format json ./docs
 ```
 
 ---

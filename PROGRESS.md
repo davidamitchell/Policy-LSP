@@ -6,8 +6,8 @@ Last updated: 2026-02-28
 
 ## Current Status
 
-**Phase:** Epic 0 — Foundation (complete)
-**Active slice:** None — see BACKLOG.md W-0003 for next work
+**Phase:** Epic 0 — Foundation (complete), Epic 1 — check subcommand (complete)
+**Active slice:** None — see BACKLOG.md W-0003 or W-0015 for next work
 **Branch:** `copilot/implement-go-lsp-server`
 
 ---
@@ -15,13 +15,46 @@ Last updated: 2026-02-28
 | Epic | Title | Status | Complete |
 |---|---|---|---|
 | 0 | Foundation | Done | 2 / 2 slices |
-| 1 | LSP Feature Completeness | Not started | 0 / 5 slices |
+| 1 | LSP Feature Completeness | In progress | 1 / 5 slices |
 | 2 | Operational Readiness | Not started | 0 / 4 slices |
 | 3 | MCP Integration | Not started | 0 / 1 slice |
 
 ---
 
 ## Work Log
+
+### 2026-02-28 — Session 3
+
+**Completed:**
+
+- `cmd/gov-lsp/main.go` — added `check` subcommand: `gov-lsp check [--policies <dir>] [--format text|json] [path...]`. Batch policy evaluation from the CLI. Exit code 1 on violations.
+- `cmd/gov-lsp/check_test.go` — 8 unit tests covering: violating file, compliant file, non-markdown, multiple files, dash→underscore fix, JSON format, self-governance (docs/ violations), hidden dir skipping
+- `Makefile` — `make build`, `make test`, `make vet`, `make smoke`, `make check-policy`, `make clean`
+- `.vscode/settings.json` + `.vscode/extensions.json` — VS Code config with Go and OPA extension recommendations; explains the extension gap (W-0015)
+- `docs/adr/0005-cli-check-subcommand.md` — ADR documenting the check subcommand decision, alternatives, and path forward
+- `docs/adr/README.md` — updated index with ADR 0005
+- `docs/getting-started.md` — added batch check section with self-governance demo
+- `docs/development.md` — added Makefile section and CLI modes reference
+- `BACKLOG.md` — added W-0015 (VS Code extension), W-0016 (GitHub Actions integration); updated W-0014 context (check subcommand now done, no longer a dependency)
+- `research/lsap/README.md` — deep-dive section on LSP+LSAP combination
+
+**Self-governance demo output:**
+
+Running `make check-policy` (= `gov-lsp check .`) on this repo produces:
+```
+docs/getting-started.md: [markdown-naming-violation] SCREAMING_SNAKE_CASE
+  Fix (rename): GETTING_STARTED.md
+... (11 violations total)
+Checked 31 file(s). 11 violation(s) found.
+```
+
+This is intentional — the docs use lowercase names to demonstrate the policy.
+
+**Notes:**
+- The `check` subcommand gives agents (`gov-lsp check <file>`) a direct path to policy evaluation without an editor, without MCP, and without LSAP. It is the foundation for W-0014 and W-0016.
+- `CheckResult` JSON struct matches `Diagnostic.data` — no schema translation needed for agent consumption.
+
+---
 
 ### 2026-02-28 — Session 2
 
@@ -37,10 +70,6 @@ Last updated: 2026-02-28
 - `docs/adr/0003-rego-deny-schema.md` — deny rule schema (id, message, level, location, fix) with mapping rationale
 - `docs/adr/0004-policies-as-runtime-directory.md` — runtime dir vs embedded vs remote bundle decision
 - `docs/adr/README.md` — updated index with 0002, 0003, 0004
-
-**Notes:**
-- `docs/` now covers the full developer journey: get started → write policies → integrate with editor/agent → contribute
-- All three ADRs document decisions that existed implicitly in the code but had no recorded rationale
 
 ---
 
@@ -67,7 +96,8 @@ Last updated: 2026-02-28
 
 ## Next Steps
 
-1. W-0003 — `textDocument/codeAction` handler for rename fix
-2. W-0005 — Refactor engine to accept `fs.FS` (hermetic tests)
-3. W-0008 — Integration tests for LSP handler
-4. W-0004 — Policy hot-reload via `workspace/didChangeWatchedFiles`
+1. W-0003 — `textDocument/codeAction` handler for rename fix (makes VS Code offer one-click fix)
+2. W-0015 — VS Code extension wrapper (live in-editor diagnostics for VS Code users)
+3. W-0012 — MCP wrapper (`gov-lsp-mcp`) — enables Claude Code / Copilot Agent without an editor
+4. W-0014 — `gov-lsp-governance` agent skill (SKILL.md + `gov-lsp check`)
+5. W-0016 — GitHub Actions CI integration

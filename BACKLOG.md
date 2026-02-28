@@ -241,10 +241,57 @@ A `gov-lsp-governance` agent skill exists and installs into Claude Code (`~/.cla
 
 The `lsp-client/lsp-skill` project (see `research/lsap/README.md`, section "The `lsp-skill` Ecosystem") demonstrates the pattern: a SKILL.md instruction file + a CLI subcommand. The skill installs into the same `~/.claude/skills/` directory already used by the `davidamitchell/Skills` submodule in this repo.
 
-GOV-LSP already produces the right output — violation messages, severity, and self-contained fix suggestions. The skill is a thin adapter: a SKILL.md that documents the command interface, plus a `check` subcommand on the `gov-lsp-mcp` binary (from W-0012) that accepts a file path and prints Markdown.
+GOV-LSP already produces the right output — violation messages, severity, and self-contained fix suggestions. The skill is a thin adapter: a SKILL.md that documents the command interface, plus the `gov-lsp check` subcommand (already implemented in W-0001) that accepts a file path and prints Markdown.
 
 This is the most direct path to autonomous agent governance enforcement without an editor — simpler than a full LSAP implementation (W-0013) and complementary to MCP (W-0012).
 
 ### Notes
 
-Depends on W-0012 for the `gov-lsp check <file>` CLI subcommand. The skill itself is ~50 lines of Markdown plus the command registration. No Go SDK or protocol stabilisation required. Write an ADR before implementation to decide whether the skill ships in this repo or as a separate `gov-lsp-skill` release artifact.
+The `gov-lsp check <file>` CLI subcommand is already implemented (see ADR 0005). W-0014 now depends only on the SKILL.md authoring work. The skill itself is ~50 lines of Markdown plus the command registration. No Go SDK or protocol stabilisation required. Write an ADR before implementation to decide whether the skill ships in this repo or as a separate `gov-lsp-skill` release artifact.
+
+---
+
+## W-0015
+
+status: ready
+created: 2026-02-28
+updated: 2026-02-28
+
+### Outcome
+
+A minimal VS Code extension (`vscode-gov-lsp`) is published to the VS Code Marketplace. It starts the `gov-lsp` binary as a Language Server using `vscode-languageclient`, configures it to evaluate the current workspace's policy directory, and displays GOV-LSP diagnostics inline in the editor. A `gov-lsp.policies` setting allows workspace-level policy directory override.
+
+### Context
+
+The server binary already implements a complete LSP server. The only missing piece is the client-side glue that VS Code needs to launch and connect to a stdio LSP binary. `vscode-languageclient` makes this ~50 lines of TypeScript. The `.vscode/settings.json` and `.vscode/extensions.json` files already document the target config shape.
+
+### Notes
+
+This is the most common editor for the target audience. Write the extension in TypeScript using the standard `vscode-languageclient` + `vscode-languageserver-protocol` packages. The extension is separate from the Go binary — it wraps it, similar to how `gopls` is wrapped by `golang.go`. The binary path should default to the system PATH (`gov-lsp`) with a workspace override.
+
+---
+
+## W-0016
+
+status: ready
+created: 2026-02-28
+updated: 2026-02-28
+
+### Outcome
+
+A GitHub Actions step in `.github/workflows/ci.yml` (or a reusable `gov-lsp-action`) runs `gov-lsp check .` on every PR and posts violations as PR review comments. The action takes `policies-dir` as an input and outputs a structured JSON report. PRs with policy violations are blocked from merging.
+
+### Context
+
+The `gov-lsp check --format json` output is already machine-readable and maps directly to the GitHub Pull Request Review Comments API (`/pulls/{pull_number}/comments`). The integration requires a small GitHub Action wrapper that calls the binary and posts the results. This closes the loop: governance violations are caught in CI even for developers who don't have the editor extension installed.
+
+### Notes
+
+The `gov-lsp check` subcommand already returns exit code 1 on violations. A minimal GitHub Action can be:
+```yaml
+- run: |
+    gov-lsp check --format json . > /tmp/violations.json
+    cat /tmp/violations.json
+  continue-on-error: false
+```
+A richer action would post violations as inline PR comments using the GitHub API. That requires a small Node.js or Go wrapper reading the JSON output.

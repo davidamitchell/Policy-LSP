@@ -224,7 +224,7 @@ This is a meaningful but contained piece of work — roughly the same scope as W
 
 1. **Proceed with W-0012 (MCP wrapper) as planned.** It has the widest agent support today (Copilot Agent, Claude Code both support MCP natively).
 
-2. **Add W-0014: `gov-lsp-skill` — LSAP agent skill.** This is the most actionable near-term step. Modelled on `lsp-client/lsp-skill`, a `gov-lsp-skill` is a SKILL.md file + a `gov-lsp check` CLI subcommand. Once W-0012 ships the engine CLI path, the skill is ~50 lines of Markdown instructions plus the command wrapper. Installs into Claude Code at `~/.claude/skills/gov-lsp-governance/` — the same mechanism already used by `davidamitchell/Skills` in this repo.
+2. **Add W-0014: `gov-lsp-skill` — LSAP agent skill.** This is the most actionable near-term step. Modelled on `lsp-client/lsp-skill`, a `gov-lsp-skill` is a SKILL.md file + the `gov-lsp check` CLI subcommand (now implemented). The skill is ~50 lines of Markdown instructions. Installs into Claude Code at `~/.claude/skills/gov-lsp-governance/` — the same mechanism already used by `davidamitchell/Skills` in this repo. **The `gov-lsp check` subcommand is complete (W-0001/ADR-0005) — W-0014 only needs the SKILL.md wrapper now.**
 
 3. **Add W-0013: Full LSAP cognitive endpoint.** Watch the LSAP spec stabilise (currently v1.0.0-alpha). When a Go-idiomatic path exists (the protocol schema is stable and a Go SDK or sufficient examples exist), implement a `check_policy` LSAP capability alongside the MCP tool. The engine call is identical; only the request/response shape differs.
 
@@ -234,20 +234,114 @@ This is a meaningful but contained piece of work — roughly the same scope as W
 
 ---
 
+## How LSP and LSAP Combine (Deep Dive)
+
+This section answers the question: *can LSP and LSAP work together to deliver LSP errors/hints directly to agents?*
+
+**Yes. They serve different layers of the same stack.**
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                    AI Agent (Claude Code, Copilot, etc.)   │
+│  understands: natural language, Markdown, tool calls       │
+└──────────────────────┬────────────────────────────────────┘
+                       │ cognitive request
+                       │ "check governance on this file"
+                       ▼
+┌───────────────────────────────────────────────────────────┐
+│          LSAP Orchestration Layer / Agent Skill            │
+│  translates cognitive request → sequence of LSP calls     │
+│  reformats LSP response → Markdown report for LLM          │
+│                                                           │
+│  gov-lsp-skill (W-0014):  calls `gov-lsp check <file>`    │
+│  LSAP endpoint (W-0013):  speaks LSAP protocol            │
+└──────────────────────┬────────────────────────────────────┘
+                       │ LSP protocol (JSON-RPC)
+                       │ textDocument/didOpen
+                       │ textDocument/publishDiagnostics
+                       ▼
+┌───────────────────────────────────────────────────────────┐
+│              GOV-LSP (Language Server)                     │
+│  evaluates Rego policies via OPA SDK                       │
+│  returns Diagnostic{code, message, severity, data.fix}     │
+└───────────────────────────────────────────────────────────┘
+```
+
+### The signal flow
+
+**Path A — Editor (today, works)**
+1. Editor sends `textDocument/didOpen` to GOV-LSP over stdio.
+2. GOV-LSP evaluates policies and sends `textDocument/publishDiagnostics`.
+3. Editor renders diagnostics in the Problems panel.
+4. Copilot Agent reads the Problems panel and can act on the violations.
+
+**Path B — CLI check (implemented, works)**
+1. Agent or CI calls `gov-lsp check <file>` directly.
+2. `check` runs the OPA engine and prints `text` or `json` output.
+3. Agent reads output and applies fixes (rename, insert, delete).
+
+**Path C — MCP (W-0012, ready to build)**
+1. Agent calls `tools/call` → `check_file` on the `gov-lsp-mcp` binary.
+2. `gov-lsp-mcp` calls `engine.Evaluate()` and returns structured JSON.
+3. Agent parses the MCP response and applies fixes.
+
+**Path D — Agent skill (W-0014, ready to build)**
+1. Agent says "check governance on this file" → skill intercepts.
+2. Skill calls `gov-lsp check <file>`.
+3. Skill formats results as a Markdown policy report and returns it to the agent.
+
+**Path E — LSAP (W-0013, future)**
+1. LSAP client sends `check_policy` request to GOV-LSP.
+2. GOV-LSP LSAP handler calls `engine.Evaluate()`.
+3. LSAP handler formats violations as a Markdown document.
+4. Agent receives one structured Markdown report.
+
+### What does "combine" mean in practice?
+
+The LSP server handles **real-time streaming evaluation** (editor-attached mode). LSAP/MCP/CLI handle **on-demand batch evaluation** (agent/CI mode). The `engine.Evaluate()` function is shared across all paths. Adding new transport layers does not require changing the policies or the violation schema.
+
+The `diagnostic.data.fix` field is the universal fix representation — it means the same thing whether the consumer is an editor (reads it as a `WorkspaceEdit`), an agent (reads it as a rename instruction), an MCP client (reads it as JSON), or an LSAP client (reads it as a Markdown diff).
+
+### Self-governance example
+
+Running `gov-lsp check .` on this repo demonstrates all of this working end-to-end:
+
+```bash
+$ make check-policy
+docs/getting-started.md: [markdown-naming-violation] Markdown file 'getting-started.md' must be SCREAMING_SNAKE_CASE
+  Fix (rename): GETTING_STARTED.md
+...
+Checked 31 file(s). 11 violation(s) found.
+```
+
+An agent with W-0014 (gov-lsp-skill) installed would receive:
+
+```markdown
+# Policy Check: docs/getting-started.md
+
+## ❌ Violations (1)
+
+### markdown-naming-violation  
+**Rule:** `governance.filenames`  
+**Message:** Markdown file 'getting-started.md' must be SCREAMING_SNAKE_CASE  
+**Fix:** Rename to `GETTING_STARTED.md`
+
+---
+*Checked 1 file. 1 violation found.*
+```
+
+No JSON parsing. No LSP client. No editor. The agent knows what to do.
+
+---
+
 ## Backlog Items (proposed)
 
 See `BACKLOG.md`:
 
 **W-0013** (already added): LSAP cognitive endpoint — blocked on protocol stability.
 
-**W-0014** (new): `gov-lsp-skill` — agent skill for governance checks:
+**W-0014** (updated): `gov-lsp-skill` — agent skill for governance checks. **`gov-lsp check` is now implemented. Only SKILL.md needed.**
 
-```
-W-0014 | gov-lsp-skill: LSAP agent skill
-Status: ready (after W-0012 ships gov-lsp check CLI)
-Outcome: A `gov-lsp-governance` skill installs into Claude Code (~/.claude/skills/),
-         Gemini (~/.gemini/skills/), and any agentskills.io-compatible agent tool.
-         Running "check governance on changed files" triggers the skill, which calls
-         `gov-lsp check <file>` and returns a Markdown policy report.
-Depends on: W-0012 (need the check CLI subcommand from the MCP binary).
-```
+**W-0015** (added): VS Code extension — wraps the binary for in-editor diagnostics.
+
+**W-0016** (added): GitHub Actions integration — `gov-lsp check` in CI, violations as PR comments.

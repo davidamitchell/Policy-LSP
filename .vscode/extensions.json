@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    // Go language support (required)
+    "golang.go",
+    // OPA / Rego policy editing support
+    "open-policy-agent.opa"
+    // GOV-LSP VS Code extension — not yet published (W-0015 in BACKLOG.md).
+    // Once available, add: "davidamitchell.gov-lsp"
+  ]
+}

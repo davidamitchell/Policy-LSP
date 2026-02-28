@@ -71,6 +71,50 @@ go test -race -count=1 ./...
 
 ---
 
+## Run a batch policy check (self-governance demo)
+
+The `check` subcommand evaluates all files in one or more paths and prints violations — no editor or LSP client required:
+
+```bash
+# Build the binary
+make build   # or: go build -o gov-lsp ./cmd/gov-lsp
+
+# Check the whole repo against the default policies
+make check-policy
+```
+
+Example output (the repo's own docs/ files violate the SCREAMING_SNAKE_CASE rule intentionally — they exist to *demonstrate* the policy):
+
+```
+docs/getting-started.md: [markdown-naming-violation] Markdown file 'getting-started.md' must be SCREAMING_SNAKE_CASE
+  Fix (rename): GETTING_STARTED.md
+docs/policies.md: [markdown-naming-violation] Markdown file 'policies.md' must be SCREAMING_SNAKE_CASE
+  Fix (rename): POLICIES.md
+...
+Checked 31 file(s). 11 violation(s) found.
+```
+
+Check a specific directory:
+
+```bash
+GOV_LSP_POLICIES=./policies ./gov-lsp check ./docs
+```
+
+Output violations as JSON (machine-readable, same schema as `Diagnostic.data`):
+
+```bash
+GOV_LSP_POLICIES=./policies ./gov-lsp check --format json ./docs
+```
+
+Exit code: `0` = no violations, `1` = violations found, `2` = usage error.
+
+This is the foundation for:
+- CI policy enforcement (`gov-lsp check .` in GitHub Actions)
+- Agent self-correction (`gov-lsp check <file>` called by Claude Code or Copilot)
+- The upcoming `gov-lsp-governance` agent skill (W-0014)
+
+---
+
 ## Build with Docker
 
 ```bash
