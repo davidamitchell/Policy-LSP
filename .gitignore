@@ -9,7 +9,7 @@
 *.dylib
 
 # Built binaries
-gov-lsp
+/gov-lsp
 
 # Test binary, built with `go test -c`
 *.test
