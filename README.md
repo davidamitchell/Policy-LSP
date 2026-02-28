@@ -124,6 +124,7 @@ See [`docs/policies.md`](docs/policies.md) for the complete deny rule schema and
 | [`docs/mcp-and-skills.md`](docs/mcp-and-skills.md) | MCP configuration and agent skills |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records |
 | [`research/lsp-agent-integration/`](research/lsp-agent-integration/) | How to integrate GOV-LSP into another repo via git submodule + `LSP.agent.md` |
+| [`research/lsap/`](research/lsap/) | LSAP (Language Server Agent Protocol) — research findings and implications for GOV-LSP |
 
 ## Repository layout
 

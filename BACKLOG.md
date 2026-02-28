@@ -200,3 +200,27 @@ The implementation calls `engine.Evaluate()` directly (bypassing the LSP layer e
 ### Notes
 
 ADR needed before implementation: decide whether this is a separate binary (`gov-lsp-mcp`) or a mode flag on the existing binary (`gov-lsp --mode mcp`). Separate binary keeps the LSP binary's dependency surface clean. Mode flag simplifies distribution.
+
+---
+
+## W-0013
+
+status: backlog
+created: 2026-02-28
+updated: 2026-02-28
+
+### Outcome
+
+A `check_policy` LSAP cognitive capability exists: any LSAP-aware agent can send a `{"mode":"check_policy","file_path":"<path>","file_contents":"<text>"}` request and receive a structured Markdown report listing all policy violations, their messages, and fix suggestions. The LSAP endpoint uses the same `engine.Evaluate()` call as the MCP tool (W-0012).
+
+### Context
+
+LSAP (Language Server Agent Protocol — `github.com/lsp-client/LSAP`, v1.0.0-alpha, MIT) is an orchestration layer that translates LSP's atomic editor operations into high-level "cognitive" interfaces for AI agents. Its Markdown-first response format is token-efficient and directly consumable by LLMs without JSON parsing.
+
+GOV-LSP is a natural fit: its diagnostics are already semantically rich (natural language messages, typed fix suggestions). Wrapping them in LSAP's `check_policy` interface requires no changes to the engine or policy files.
+
+See `research/lsap/README.md` for protocol analysis, comparison with MCP, and a `check_policy` request/response design.
+
+### Notes
+
+Blocked on LSAP protocol stability (currently v1.0.0-alpha, Python SDK only, no Go SDK). Implement after W-0012 is done and the LSAP spec reaches a stable release or a Go SDK is available. The engine call and policy schema will not need to change — this is purely a new transport adapter.
