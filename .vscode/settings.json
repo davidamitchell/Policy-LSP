@@ -1,0 +1,36 @@
+{
+  // GOV-LSP configuration for VS Code
+  //
+  // To use GOV-LSP with VS Code you need a thin extension wrapper that starts
+  // the binary as an LSP server (see W-0015 in BACKLOG.md). Until that extension
+  // is built, the recommended approach is:
+  //
+  //   1. Run `make check-policy` from the terminal to see policy violations.
+  //   2. Use Neovim or Zed with the config in docs/integrations.md for live
+  //      in-editor diagnostics today.
+  //
+  // Once the VS Code extension (W-0015) is published to the Marketplace, add:
+  //
+  //   "gov-lsp.policies": "${workspaceFolder}/policies",
+  //   "gov-lsp.binary": "${workspaceFolder}/gov-lsp",
+  //
+  // ── Go settings ──────────────────────────────────────────────────────────────
+  "go.lintTool": "golangci-lint",
+  "go.testFlags": ["-count=1"],
+  "go.vetOnSave": "workspace",
+
+  // ── Editor ───────────────────────────────────────────────────────────────────
+  "editor.formatOnSave": true,
+  "editor.rulers": [100],
+  "[go]": {
+    "editor.defaultFormatter": "golang.go"
+  },
+  "[rego]": {
+    "editor.defaultFormatter": "open-policy-agent.opa"
+  },
+
+  // ── OPA extension (for editing .rego policies) ───────────────────────────────
+  // Install: open-policy-agent.opa from the VS Code Marketplace.
+  // Provides Rego syntax highlighting, evaluation, and formatting.
+  "opa.checkOnSave": true
+}
