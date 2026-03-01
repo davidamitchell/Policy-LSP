@@ -24,7 +24,7 @@ deny contains msg if {
     # Only scan source and config files (not binaries or lock files).
     not is_excluded_file
     regex.match(
-        `(?i)(api[_-]?key|api[_-]?secret|access[_-]?token|secret[_-]?key|client[_-]?secret|password|passwd)\s*[:=]\s*["'][a-zA-Z0-9+/\-_]{20,}["']`,
+        `(?i)"?(api[_-]?key|api[_-]?secret|access[_-]?token|secret[_-]?key|client[_-]?secret|password|passwd)"?\s*[:=]\s*["'][a-zA-Z0-9+/\-_]{20,}["']`,
         input.file_contents,
     )
     msg := {
