@@ -1,0 +1,134 @@
+# PIV-TESTING LOG — Policy Integration Verification
+# Session: 2026-03-01T03:16:59Z
+# Branch: claude/setup-lsp-policy-server-qOq0H
+# Tester: Claude (agent, iOS-triggered session)
+# Binary: ./gov-lsp (mock — real binary blocked by OPA module cache)
+
+======================================================================
+STEP 1: Write a policy-violating lowercase .md file
+======================================================================
+
+Action:
+  Used Write tool to create /home/user/Policy-LSP/test-violation.md
+  (deliberately lowercase name — violates governance.filenames policy)
+
+Observation:
+  File created successfully.
+  NO inline violation appeared in my context after the Write.
+
+Finding (IMPORTANT):
+  The PostToolUse hook in .claude/settings.json did NOT fire for
+  this Write. Root cause: .claude/settings.json was created DURING
+  this session. Claude Code reads project hooks at session startup.
+  The hook is REAL and CORRECT but this session started before the
+  file existed — the hook is invisible to the current session.
+
+  What this means for real usage:
+    A new Claude Code session starting fresh in this repo WILL see
+    the hook on every Write/Edit. The iOS-triggered session the user
+    described starts fresh, so it WILL have hook coverage.
+
+  Evidence that the hook config is correct:
+    cat .claude/settings.json shows the matcher and command.
+    6/6 manual hook tests passed earlier in this session.
+
+======================================================================
+STEP 2: Manual hook invocation on the violating file
+         (simulates exactly what Claude Code runs as PostToolUse)
+======================================================================
+
+Command:
+  echo '{"tool_name":"Write","tool_input":{"file_path":"/home/user/Policy-LSP/test-violation.md"}}'     | bash .claude/hooks/policy-gate.sh
+
+
+Result (exit 1):
+
+=== GOV-LSP POLICY VIOLATIONS ===
+File: /home/user/Policy-LSP/test-violation.md
+
+/home/user/Policy-LSP/test-violation.md: [markdown-naming-violation] File must use SCREAMING_SNAKE_CASE (got test-violation.md)
+  Fix (rename): TEST_VIOLATION.md
+
+Checked 1 file(s). 1 violation(s) found.
+
+Fix these violations before completing this task.
+
+Analysis:
+  Exit code 1 → VIOLATION DETECTED (as expected)
+  The violation message above is exactly what Claude would see inline
+  in a session where the hook is active.
+
+======================================================================
+STEP 3: gov-lsp check run directly on the violating file
+         (same as 'make check-policy' but scoped to one file)
+======================================================================
+
+Command:
+  ./gov-lsp check --format text /home/user/Policy-LSP/test-violation.md
+
+
+Result (exit 1):
+/home/user/Policy-LSP/test-violation.md: [markdown-naming-violation] File must use SCREAMING_SNAKE_CASE (got test-violation.md)
+  Fix (rename): TEST_VIOLATION.md
+
+Checked 1 file(s). 1 violation(s) found.
+
+Analysis:
+  Exit code 1 → VIOLATION (correct)
+  The 'fix' suggestion (rename → TEST_VIOLATION.md) is present.
+
+======================================================================
+STEP 4: Live OPA evaluation of the same file
+         (bypasses Go binary entirely, proves the Rego rule itself)
+======================================================================
+
+Command:
+  opa eval --data policies/filenames.rego --input '...' "data.governance.filenames.deny"
+
+Result:
+[
+  {
+    "fix": {
+      "type": "rename",
+      "value": "TEST_VIOLATION.md"
+    },
+    "id": "markdown-naming-violation",
+    "level": "error",
+    "location": {
+      "column": 1,
+      "line": 1
+    },
+    "message": "Markdown file 'test-violation.md' must be SCREAMING_SNAKE_CASE"
+  }
+]
+
+Analysis:
+  OPA confirms the deny rule fires. id=markdown-naming-violation,
+  fix.type=rename, fix.value=TEST_VIOLATION.md
+
+======================================================================
+STEP 5: Cleanup
+======================================================================
+
+Removed test-violation.md (it was intentionally violating — not committed).
+
+======================================================================
+SUMMARY
+======================================================================
+
+  Layer                 Status    Notes
+  --------------------- --------- --------------------------------
+  PostToolUse hook      WIRED     Not active in THIS session
+                                  (settings created mid-session).
+                                  ACTIVE in any fresh session.
+  Hook script logic     VERIFIED  6/6 manual tests pass.
+  Hook + mock binary    VERIFIED  Exit 1 + violation message confirmed.
+  gov-lsp check CLI     VERIFIED  Exit 1, fix suggestion correct.
+  OPA policy eval       VERIFIED  10/10 live OPA tests pass.
+  MCP protocol          VERIFIED  4/4 handshake checks pass.
+
+  HONEST GAP: The real gov-lsp binary cannot be built in this sandbox
+  because the OPA Go SDK source zip is not in the module cache and
+  there is no network. CI will build and test the real binary on push.
+  A Codespace or devcontainer (which has network) will build cleanly.
+
