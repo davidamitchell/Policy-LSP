@@ -9,10 +9,15 @@
 //
 //	gov-lsp check [--policies <dir>] [--format text|json] [path...]
 //
+// Usage (MCP server mode):
+//
+//	gov-lsp mcp [--policies <dir>]
+//
 // In server mode the server reads JSON-RPC messages from stdin and writes
 // responses to stdout.  In check mode it walks the given paths, evaluates each
 // file against all loaded policies, prints violations to stdout, and exits 1 if
-// any violations are found (0 if clean).
+// any violations are found (0 if clean).  In MCP mode it runs a Model Context
+// Protocol stdio server exposing gov_check_file and gov_check_workspace as tools.
 package main
 
 import (
@@ -35,8 +40,14 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "check" {
-		os.Exit(checkMain(os.Args[2:]))
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "check":
+			os.Exit(checkMain(os.Args[2:]))
+		case "mcp":
+			mcpMain(os.Args[2:])
+			return
+		}
 	}
 	runServer()
 }

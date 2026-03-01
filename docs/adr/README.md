@@ -11,6 +11,7 @@ This directory contains Architecture Decision Records (ADRs) for the GOV-LSP pro
 | [0003](0003-rego-deny-schema.md) | Rego deny rule schema | accepted |
 | [0004](0004-policies-as-runtime-directory.md) | Policies as a runtime directory, not embedded in the binary | accepted |
 | [0005](0005-cli-check-subcommand.md) | CLI check subcommand (`gov-lsp check`) | accepted |
+| [0006](0006-agent-loop-integration.md) | Agent loop integration: PostToolUse hook + MCP server | accepted |
 
 ## Adding a New ADR
 

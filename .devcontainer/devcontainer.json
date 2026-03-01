@@ -1,0 +1,35 @@
+{
+  "name": "GOV-LSP",
+  "image": "mcr.microsoft.com/devcontainers/go:1.24",
+
+  // Build the gov-lsp binary on container creation so that the MCP server
+  // and the PostToolUse hook are ready without a manual build step.
+  "postCreateCommand": "go build -o gov-lsp ./cmd/gov-lsp && echo 'gov-lsp built successfully'",
+
+  // Make the binary available system-wide.
+  "postStartCommand": "[ -x ./gov-lsp ] || go build -o gov-lsp ./cmd/gov-lsp",
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.toolsManagement.checkForUpdates": "off"
+      },
+      "extensions": [
+        "golang.go"
+      ]
+    },
+    "codespaces": {
+      "openFiles": ["CLAUDE.md", "AGENTS.md"]
+    }
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+
+  "remoteEnv": {
+    "GOV_LSP_POLICIES": "${containerWorkspaceFolder}/policies"
+  }
+}
