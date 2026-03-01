@@ -156,6 +156,20 @@ PROGRESS.md                # Session history
 This repository is self-governing. The same `gov-lsp` tool it ships runs against
 its own source on every file write.
 
+### Native LSP Client (Claude Code + GitHub Copilot Agent)
+
+`.claude/lsp.json` registers `gov-lsp` as a Language Server for Claude Code.
+`.github/lsp.json` does the same for GitHub Copilot Agent. The agent starts the server
+via `scripts/lsp-start.sh` (which auto-builds the binary if absent), then sends
+`textDocument/didOpen` and `textDocument/didChange` events for every file it views or
+modifies. The server streams `textDocument/publishDiagnostics` notifications back —
+the same signal path that puts red squiggles in an IDE, delivered directly into the
+agent's context. Violations are `Diagnostic` objects with exact line/column positions,
+severity, and `data.fix` containing the suggested correction.
+
+This is the highest-fidelity integration: no polling, no manual invocation, violations
+appear in real time on every file event.
+
 ### Automatic: PostToolUse Hook (Claude Code)
 
 `.claude/settings.json` configures a `PostToolUse` hook on `Write`, `Edit`, and

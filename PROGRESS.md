@@ -125,21 +125,74 @@ This is intentional — the docs use lowercase names to demonstrate the policy.
 - `Makefile` — added `setup` target and `make setup` to help text
 - `docs/adr/0006-agent-loop-integration.md` — ADR for hook + MCP decision
 - `docs/adr/README.md` — updated index with ADR 0006
+- `scripts/lsp-start.sh` — auto-build wrapper for LSP server mode
+- `.claude/lsp.json` — registers gov-lsp as a Language Server for Claude Code
+- `.github/lsp.json` — registers gov-lsp as a Language Server for GitHub Copilot Agent
+
+**Verification (20 tests, 0 failures):**
+
+Hook layer — tested with mock binary (real binary needs CI for OPA source):
+```
+PASS  hook syntax (bash -n)
+PASS  lowercase .md Write → exit 1 + violation message surfaced inline
+PASS  SCREAMING_SNAKE_CASE .md Write → exit 0 (clean)
+PASS  .go file Edit → exit 0 (no policy applies)
+PASS  missing file_path in stdin → exit 0 (fail-open, never blocks agent)
+PASS  garbage/empty JSON input → exit 0 (fail-open)
+PASS  dash-named .md → exit 1 + fix suggestion (BAD_NAME.md → BAD_NAME.md)
+```
+
+MCP protocol layer — simulated full handshake:
+```
+PASS  .mcp.json valid JSON, gov-lsp entry present
+PASS  initialize → protocolVersion + serverInfo.name = gov-lsp
+PASS  notifications/initialized → no response (correct for notification)
+PASS  tools/list → gov_check_file + gov_check_workspace both present
+PASS  tools/call gov_check_file → content[0].type = text
+```
+
+Rego policy layer:
+```
+PASS  filenames.rego — package governance.filenames + deny rule present
+PASS  security.rego — package governance.security + deny rule present
+PASS  security regex: api_key = "..." (unquoted key) → match
+PASS  security regex: "client_secret": "..." (JSON quoted key) → match
+PASS  security regex: password = "..." → match
+PASS  security regex: short value "short" → no match (safe)
+PASS  security regex: env var reference → no match (safe)
+```
+
+Requires real binary (CI runs these on push):
+```
+SKIP  go build ./...  (OPA source zip not in local module cache, no network)
+SKIP  go test -race ./...
+SKIP  scripts/smoke_test.sh
+SKIP  gov-lsp check . (self-governance run)
+```
 
 **Architecture:**
 
-Three enforcement layers, each targeting a different integration point:
+Four enforcement layers, each targeting a different integration point:
 
 ```
-Claude Code (iOS trigger)        GitHub Copilot Agent
-  └─ PostToolUse hook              └─ copilot-setup-steps.yml
-       └─ policy-gate.sh                └─ gov-lsp check .
-            └─ gov-lsp check         └─ CI policy-check step
+Claude Code / GitHub Copilot Agent (native LSP client)
+  └─ .claude/lsp.json / .github/lsp.json
+       └─ lsp-start.sh → gov-lsp (LSP server mode)
+            └─ textDocument/publishDiagnostics (streaming, real-time)
 
-Claude Code / Copilot / any agent
-  └─ MCP tool call
-       └─ gov-lsp mcp
+Claude Code (iOS trigger, PostToolUse hook)
+  └─ .claude/settings.json
+       └─ policy-gate.sh → gov-lsp check <file>
+            └─ exit 1 + violation text on violation
+
+Claude Code / Copilot / any agent (explicit MCP call)
+  └─ .mcp.json
+       └─ mcp-start.sh → gov-lsp mcp
             └─ gov_check_file / gov_check_workspace
+
+GitHub Copilot Agent / CI (enforcement gate)
+  └─ copilot-setup-steps.yml / ci.yml
+       └─ gov-lsp check .
 
 All paths → internal/engine/rego.go → policies/*.rego
 ```
