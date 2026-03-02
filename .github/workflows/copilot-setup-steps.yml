@@ -17,6 +17,12 @@ jobs:
     permissions:
       contents: read
 
+    env:
+      # GH_TOKEN is the standard env var used by gh CLI for authentication.
+      # GH_COPILOT_CLI_KEY must be a PAT with the `copilot` scope set in
+      # repository secrets: Settings → Secrets → Actions → New repository secret.
+      GH_TOKEN: ${{ secrets.GH_COPILOT_CLI_KEY }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -42,6 +48,18 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           cp gov-lsp "$HOME/.local/bin/gov-lsp"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install gh copilot extension
+        # Installs the GitHub Copilot CLI extension so the agent can use
+        # 'gh copilot suggest' and 'gh copilot explain' during the session.
+        # Requires GH_COPILOT_CLI_KEY secret (PAT with 'copilot' scope).
+        run: gh extension install github/gh-copilot
+        # Skip gracefully if the secret is not yet configured.
+        continue-on-error: true
+
+      - name: Verify gh copilot CLI
+        run: gh copilot --version
+        continue-on-error: true
 
       - name: Read agent instructions
         run: |
