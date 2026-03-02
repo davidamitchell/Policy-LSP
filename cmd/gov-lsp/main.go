@@ -251,6 +251,10 @@ func runServer() {
 			writeMessage(writer, data)
 			writerMu.Unlock()
 		}
+		// The LSP exit notification signals the server to terminate.
+		if req.Method == "exit" {
+			return
+		}
 	}
 }
 

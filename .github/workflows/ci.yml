@@ -36,6 +36,11 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
+      - name: E2E test (binary protocol)
+        # Builds the binary once inside TestMain and then exercises the full
+        # LSP Content-Length+JSON-RPC round-trip over stdin/stdout.
+        run: go test -v -count=1 -run TestE2E ./cmd/gov-lsp/
+
       - name: Smoke test
         run: |
           go build -o /tmp/gov-lsp ./cmd/gov-lsp
