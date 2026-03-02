@@ -40,7 +40,7 @@ deny contains msg if {
 `)},
 	}
 
-	eng, err := engine.NewFromFS(policies)
+	eng, err := engine.New(policies)
 	if err != nil {
 		t.Fatalf("policyEngine: %v", err)
 	}

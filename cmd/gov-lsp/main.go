@@ -3,7 +3,7 @@
 //
 // Usage (LSP server mode):
 //
-//	gov-lsp [--policies <dir>]
+//	gov-lsp [--policies <dir>] [--log-level debug|info|warn|error]
 //
 // Usage (batch check mode):
 //
@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"io"
 	iofs "io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -83,7 +83,7 @@ func checkMain(args []string) int {
 		paths = []string{"."}
 	}
 
-	eng, err := engine.New(*policiesDir)
+	eng, err := engine.NewFromDir(*policiesDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gov-lsp check: loading policies: %v\n", err)
 		return 1
@@ -186,6 +186,7 @@ func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (i
 // writing responses and notifications to stdout.
 func runServer() {
 	policiesDir := flag.String("policies", defaultPoliciesDir(), "directory containing .rego policy files")
+	logLevel := flag.String("log-level", "warn", "log level: debug, info, warn, error")
 	flag.Parse()
 
 	// Allow override via environment variable.
@@ -193,9 +194,17 @@ func runServer() {
 		*policiesDir = env
 	}
 
-	eng, err := engine.New(*policiesDir)
+	// Configure structured logging to stderr.
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
+		level = slog.LevelWarn
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
+	eng, err := engine.NewFromDir(*policiesDir)
 	if err != nil {
-		log.Fatalf("loading policies from %s: %v", *policiesDir, err)
+		slog.Error("loading policies", "dir", *policiesDir, "err", err)
+		os.Exit(1)
 	}
 
 	// Publisher writes LSP notifications to stdout.
@@ -222,13 +231,13 @@ func runServer() {
 			if err == io.EOF {
 				return
 			}
-			log.Printf("read error: %v", err)
+			slog.Warn("read error", "err", err)
 			return
 		}
 
 		var req lsp.Request
 		if err := json.Unmarshal(msg, &req); err != nil {
-			log.Printf("unmarshal error: %v", err)
+			slog.Warn("unmarshal error", "err", err)
 			continue
 		}
 
@@ -241,6 +250,10 @@ func runServer() {
 			writerMu.Lock()
 			writeMessage(writer, data)
 			writerMu.Unlock()
+		}
+		// The LSP exit notification signals the server to terminate.
+		if req.Method == "exit" {
+			return
 		}
 	}
 }

@@ -1,27 +1,91 @@
 # Progress
 
-Last updated: 2026-03-01
+Last updated: 2026-03-02
 
 ---
 
 ## Current Status
 
-**Phase:** Epic 0 — Foundation (complete), Epic 1 — check subcommand (complete), W-0012/W-0011/W-0016 complete
-**Active slice:** W-0003 (codeAction handler) is next
-**Branch:** `claude/setup-lsp-policy-server-qOq0H`
+**Phase:** Epic 0 — Foundation (complete), Epic 1 — LSP completeness (in progress), Epic 2 — Operational Readiness (in progress), Epic 3 — MCP/Agent Integration (done)
+**Active slice:** W-0004 (policy hot-reload) is next
+**Branch:** `copilot/review-backlog-outcomes`
 
 ---
 
 | Epic | Title | Status | Complete |
 |---|---|---|---|
 | 0 | Foundation | Done | 2 / 2 slices |
-| 1 | LSP Feature Completeness | In progress | 1 / 5 slices |
-| 2 | Operational Readiness | In progress | 2 / 4 slices (W-0011 devcontainer, W-0016 CI done) |
-| 3 | MCP + Agent Integration | In progress | 1 / 1 slice (W-0012 MCP server done) |
+| 1 | LSP Feature Completeness | In progress | 3 / 5 slices (W-0003 codeAction, W-0008 handler tests, W-0005 FS API) |
+| 2 | Operational Readiness | In progress | 3 / 4 slices (W-0011, W-0016, W-0006 slog) |
+| 3 | MCP + Agent Integration | Done | 1 / 1 slice |
+| 4 | Policy Coverage | In progress | 1 / 1 slice (W-0007 content.rego) |
 
 ---
 
 ## Work Log
+
+### 2026-03-02 — Session 5
+
+**Completed (5 backlog slices):**
+
+- **W-0003 — `textDocument/codeAction` handler**
+  - Added LSP types: `TextDocumentIdentifier`, `CodeActionContext`, `CodeActionParams`,
+    `CodeAction`, `WorkspaceEdit`, `DocumentChange` to `internal/lsp/handlers.go`
+  - Added `handleCodeAction()`: iterates context diagnostics, extracts `fix.type=rename`
+    from `Diagnostic.data`, builds a `WorkspaceEdit` with a `RenameFile` document change
+  - Added `renameURIFilename()` helper: replaces filename component of a `file://` URI
+  - Wired `textDocument/codeAction` in `Handle()`
+
+- **W-0008 — LSP handler integration tests**
+  - Created `internal/lsp/handlers_test.go` (7 tests, package `lsp_test`)
+  - Tests: initialize returns capabilities, didOpen violating file publishes diagnostics,
+    didOpen compliant file publishes empty array, codeAction returns rename edit with
+    correct oldUri/newUri, codeAction with no diagnostics returns empty slice,
+    unknown method returns −32601 error, notification returns nil (no response)
+  - Uses `testing/fstest.MapFS` — fully hermetic, no filesystem dependency
+
+- **W-0005 — Engine API refactor (`fs.FS`-first) + hermetic tests**
+  - `engine.New(fsys fs.FS)` — canonical constructor (was `NewFromFS`)
+  - `engine.NewFromDir(path string)` — convenience wrapper calling `os.DirFS`; validates
+    the directory exists before delegating to `New`
+  - Old `engine.New(string)` and `engine.NewFromFS(fs.FS)` removed
+  - `internal/engine/rego_test.go` — rewritten to use `fstest.MapFS` (no `../../policies`
+    path dependency). `policyFS()` helper inlines both policies as constants.
+  - Updated all call sites: `cmd/gov-lsp/main.go` (2×), `cmd/gov-lsp/mcp.go` (1×),
+    `cmd/gov-lsp/check_test.go` (1×)
+
+- **W-0006 — Structured logging with `log/slog`**
+  - Replaced `log.Printf` / `log.Fatalf` in `runServer()` with `slog.Warn` / `slog.Error`
+  - Added `--log-level` flag (`debug`, `info`, `warn`, `error`; default `warn`)
+  - Logger configured with `slog.NewTextHandler(os.Stderr, ...)` — output to stderr only,
+    silent at default `warn` level during normal LSP operation
+  - Removed `"log"` import from `main.go`
+
+- **W-0007 — `policies/content.rego` (Go package comment enforcement)**
+  - `policies/content.rego` — `package governance.content`; one rule:
+    non-test `.go` files that do not begin with `//` or `/*` produce a
+    `missing-package-comment` warning with `location: {line:1, col:1}`
+  - Test files ending in `_test.go` are exempt
+  - 4 new engine tests (compliant with line comment, compliant with block comment,
+    violating without comment, test file exempt)
+  - Self-governance check: all existing Go source files pass (each starts with `// Package`)
+
+**Verification (all clean):**
+
+```
+go build ./...          OK
+go vet ./...            OK
+go test ./...           OK  (28 tests across 3 packages)
+scripts/smoke_test.sh   PASS
+gov-lsp check .         14 violations (all markdown-naming in docs/ — intentional)
+```
+
+Test breakdown:
+- `cmd/gov-lsp` — 8 tests (check subcommand, self-governance, JSON format)
+- `internal/engine` — 10 tests (filenames policy + content policy, MapFS hermetic)
+- `internal/lsp` — 7 tests (initialize, didOpen, codeAction, error cases)
+
+---
 
 ### 2026-02-28 — Session 3
 
@@ -201,8 +265,8 @@ All paths → internal/engine/rego.go → policies/*.rego
 
 ## Next Steps
 
-1. W-0003 — `textDocument/codeAction` handler for rename fix (one-click fixes in editors)
-2. W-0015 — VS Code extension wrapper (live in-editor diagnostics)
-3. W-0014 — `gov-lsp-governance` agent skill
-4. W-0004 — Policy hot-reload
-5. W-0007 — Content policies (Go package comment enforcement, go-header)
+1. W-0004 — Policy hot-reload (`workspace/didChangeWatchedFiles`)
+2. W-0009 — TCP transport mode
+3. W-0010 — Release workflow (GitHub Actions, multi-arch binaries, GHCR image)
+4. W-0014 — `gov-lsp-governance` agent skill (SKILL.md + `gov-lsp check` CLI)
+5. W-0015 — VS Code extension (`vscode-gov-lsp`)

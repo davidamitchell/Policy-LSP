@@ -2,15 +2,22 @@ name: Copilot Setup Steps
 
 # This workflow is executed by GitHub Copilot's coding agent before it starts
 # working on an issue or pull request. It prepares the environment so the agent
-# has access to gov-lsp tooling during its session.
+# has access to gov-lsp tooling and the gh copilot CLI during its session.
 #
-# Ref: https://docs.github.com/en/copilot/using-github-copilot/using-copilot-coding-agent-to-work-on-tasks/about-copilot-coding-agent
+# Ref: https://docs.github.com/en/copilot/customizing-copilot/customizing-the-development-environment-for-copilot-coding-agent
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
 
 jobs:
-  setup:
+  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
     name: Setup Copilot Environment
     runs-on: ubuntu-latest
 
@@ -42,6 +49,16 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           cp gov-lsp "$HOME/.local/bin/gov-lsp"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Download gh copilot CLI
+        # `gh copilot` is built into the gh CLI and auto-downloads the Copilot CLI
+        # binary on first invocation. Authenticate with a PAT (copilot scope) stored
+        # as COPILOT_GITHUB_TOKEN in Settings → Secrets → Actions.
+        # Ref: https://cli.github.com/manual/gh_copilot
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: gh copilot -- --help
+        continue-on-error: true
 
       - name: Read agent instructions
         run: |

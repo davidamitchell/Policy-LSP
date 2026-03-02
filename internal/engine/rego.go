@@ -34,35 +34,8 @@ type Engine struct {
 	query rego.PreparedEvalQuery
 }
 
-// New creates an Engine by loading all .rego files from policyDir.
-func New(policyDir string) (*Engine, error) {
-	modules := map[string]string{}
-
-	if err := loadDir(policyDir, modules); err != nil {
-		return nil, fmt.Errorf("loading policies from %s: %w", policyDir, err)
-	}
-
-	if len(modules) == 0 {
-		return nil, fmt.Errorf("no .rego files found in %s", policyDir)
-	}
-
-	opts := []func(*rego.Rego){
-		rego.Query("data.governance[_].deny"),
-	}
-	for name, src := range modules {
-		opts = append(opts, rego.Module(name, src))
-	}
-
-	pq, err := rego.New(opts...).PrepareForEval(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("preparing query: %w", err)
-	}
-
-	return &Engine{query: pq}, nil
-}
-
-// NewFromFS creates an Engine by loading all .rego files from an fs.FS.
-func NewFromFS(fsys fs.FS) (*Engine, error) {
+// New creates an Engine by loading all .rego files from the given fs.FS.
+func New(fsys fs.FS) (*Engine, error) {
 	modules := map[string]string{}
 
 	if err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
@@ -99,6 +72,18 @@ func NewFromFS(fsys fs.FS) (*Engine, error) {
 	}
 
 	return &Engine{query: pq}, nil
+}
+
+// NewFromDir creates an Engine by loading all .rego files from policyDir on disk.
+func NewFromDir(policyDir string) (*Engine, error) {
+	info, err := os.Stat(policyDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading policies from %s: %w", policyDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("loading policies: %s is not a directory", policyDir)
+	}
+	return New(os.DirFS(policyDir))
 }
 
 // Evaluate runs all loaded policies against the given input and returns the
@@ -162,20 +147,4 @@ func stringField(m map[string]interface{}, key string) string {
 	return ""
 }
 
-// loadDir reads all .rego files from dir into modules.
-func loadDir(dir string, modules map[string]string) error {
-	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".rego") {
-			return nil
-		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		modules[filepath.Base(path)] = string(src)
-		return nil
-	})
-}
+

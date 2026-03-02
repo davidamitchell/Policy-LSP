@@ -38,7 +38,7 @@ func mcpMain(args []string) {
 		*policiesDir = env
 	}
 
-	eng, err := engine.New(*policiesDir)
+	eng, err := engine.NewFromDir(*policiesDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gov-lsp mcp: loading policies: %v\n", err)
 		os.Exit(1)

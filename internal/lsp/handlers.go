@@ -76,6 +76,11 @@ type VersionedTextDocumentIdentifier struct {
 	Version int    `json:"version"`
 }
 
+// TextDocumentIdentifier identifies a text document by URI.
+type TextDocumentIdentifier struct {
+	URI string `json:"uri"`
+}
+
 // TextDocumentContentChangeEvent represents a change to a text document.
 type TextDocumentContentChangeEvent struct {
 	Text string `json:"text"`
@@ -120,6 +125,38 @@ type PublishDiagnosticsParams struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
+// CodeActionContext carries the diagnostics that triggered the code action request.
+type CodeActionContext struct {
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// CodeActionParams are the params for textDocument/codeAction.
+type CodeActionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Context      CodeActionContext       `json:"context"`
+}
+
+// CodeAction represents an action that can be taken to fix a diagnostic.
+type CodeAction struct {
+	Title       string         `json:"title"`
+	Kind        string         `json:"kind,omitempty"`
+	Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
+	Edit        *WorkspaceEdit `json:"edit,omitempty"`
+}
+
+// WorkspaceEdit represents a set of workspace-level file changes.
+type WorkspaceEdit struct {
+	DocumentChanges []DocumentChange `json:"documentChanges,omitempty"`
+}
+
+// DocumentChange represents a file-level change operation within a WorkspaceEdit.
+type DocumentChange struct {
+	Kind   string `json:"kind"`
+	OldURI string `json:"oldUri,omitempty"`
+	NewURI string `json:"newUri,omitempty"`
+}
+
 // ---- Handler ----
 
 // Publisher is a function that sends a notification to the client.
@@ -155,6 +192,8 @@ func (h *Handler) Handle(ctx context.Context, req *Request) *Response {
 	case "textDocument/didChange":
 		h.handleDidChange(ctx, req)
 		return nil
+	case "textDocument/codeAction":
+		return h.handleCodeAction(req)
 	case "shutdown":
 		return &Response{JSONRPC: "2.0", ID: req.ID, Result: nil}
 	case "exit":
@@ -303,4 +342,49 @@ func filenameFromURI(uri string) string {
 	// Strip file:// scheme
 	path := strings.TrimPrefix(uri, "file://")
 	return filepath.Base(path)
+}
+
+func (h *Handler) handleCodeAction(req *Request) *Response {
+	var params CodeActionParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{JSONRPC: "2.0", ID: req.ID, Result: []CodeAction{}}
+	}
+
+	actions := make([]CodeAction, 0)
+	for _, diag := range params.Context.Diagnostics {
+		fix, ok := diag.Data.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		fixType, _ := fix["type"].(string)
+		fixValue, _ := fix["value"].(string)
+		if fixType != "rename" || fixValue == "" {
+			continue
+		}
+
+		oldURI := params.TextDocument.URI
+		newURI := renameURIFilename(oldURI, fixValue)
+
+		actions = append(actions, CodeAction{
+			Title:       "Rename to " + fixValue,
+			Kind:        "quickfix",
+			Diagnostics: []Diagnostic{diag},
+			Edit: &WorkspaceEdit{
+				DocumentChanges: []DocumentChange{
+					{Kind: "rename", OldURI: oldURI, NewURI: newURI},
+				},
+			},
+		})
+	}
+
+	return &Response{JSONRPC: "2.0", ID: req.ID, Result: actions}
+}
+
+// renameURIFilename replaces the filename component of a file URI with newFilename.
+func renameURIFilename(uri, newFilename string) string {
+	lastSlash := strings.LastIndex(uri, "/")
+	if lastSlash < 0 {
+		return newFilename
+	}
+	return uri[:lastSlash+1] + newFilename
 }
