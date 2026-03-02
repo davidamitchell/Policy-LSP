@@ -1,0 +1,53 @@
+name: Copilot Setup Steps
+
+# This workflow is executed by GitHub Copilot's coding agent before it starts
+# working on an issue or pull request. It prepares the environment so the agent
+# has access to gov-lsp tooling during its session.
+#
+# Ref: https://docs.github.com/en/copilot/using-github-copilot/using-copilot-coding-agent-to-work-on-tasks/about-copilot-coding-agent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    name: Setup Copilot Environment
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gov-lsp
+        run: go build -o gov-lsp ./cmd/gov-lsp
+
+      - name: Verify gov-lsp works
+        run: |
+          GOV_LSP_POLICIES=./policies ./gov-lsp check --format text . && echo "no violations" || true
+
+      - name: Install policy check alias
+        # Make 'gov-lsp' available on PATH for the remainder of the agent session.
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          cp gov-lsp "$HOME/.local/bin/gov-lsp"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Read agent instructions
+        run: |
+          echo "=== AGENT INSTRUCTIONS ==="
+          cat AGENTS.md
+          echo ""
+          echo "=== POLICY ENFORCEMENT NOTICE ==="
+          echo "gov-lsp is available. Run 'gov-lsp check .' to verify policy compliance."
+          echo "Violations must be fixed before submitting changes."

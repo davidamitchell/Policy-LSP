@@ -1,6 +1,6 @@
 module github.com/davidamitchell/policy-lsp
 
-go 1.24.13
+go 1.24.7
 
 require github.com/open-policy-agent/opa v0.70.0
 

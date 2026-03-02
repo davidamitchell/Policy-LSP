@@ -1,5 +1,12 @@
 {
   "mcpServers": {
+    "gov-lsp": {
+      "command": "bash",
+      "args": ["scripts/mcp-start.sh"],
+      "env": {
+        "GOV_LSP_POLICIES": "./policies"
+      }
+    },
     "fetch": {
       "command": "npx",
       "args": [

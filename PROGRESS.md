@@ -1,14 +1,14 @@
 # Progress
 
-Last updated: 2026-02-28
+Last updated: 2026-03-01
 
 ---
 
 ## Current Status
 
-**Phase:** Epic 0 — Foundation (complete), Epic 1 — check subcommand (complete)
-**Active slice:** None — see BACKLOG.md W-0003 or W-0015 for next work
-**Branch:** `copilot/implement-go-lsp-server`
+**Phase:** Epic 0 — Foundation (complete), Epic 1 — check subcommand (complete), W-0012/W-0011/W-0016 complete
+**Active slice:** W-0003 (codeAction handler) is next
+**Branch:** `claude/setup-lsp-policy-server-qOq0H`
 
 ---
 
@@ -16,8 +16,8 @@ Last updated: 2026-02-28
 |---|---|---|---|
 | 0 | Foundation | Done | 2 / 2 slices |
 | 1 | LSP Feature Completeness | In progress | 1 / 5 slices |
-| 2 | Operational Readiness | Not started | 0 / 4 slices |
-| 3 | MCP Integration | Not started | 0 / 1 slice |
+| 2 | Operational Readiness | In progress | 2 / 4 slices (W-0011 devcontainer, W-0016 CI done) |
+| 3 | MCP + Agent Integration | In progress | 1 / 1 slice (W-0012 MCP server done) |
 
 ---
 
@@ -94,10 +94,115 @@ This is intentional — the docs use lowercase names to demonstrate the policy.
 
 ---
 
+---
+
+### 2026-03-01 — Session 4
+
+**Completed (agent-loop integration):**
+
+- `CLAUDE.md` — primary instructions for Claude Code: policy system overview,
+  bootstrap instructions, violation response protocol, MCP tool reference
+- `.claude/settings.json` — PostToolUse hook config (matcher: `Write|Edit|MultiEdit`)
+- `.claude/hooks/policy-gate.sh` — hook script: parses tool context from stdin
+  (jq or python3), runs `gov-lsp check` on the modified file, exits 1 on violations
+- `cmd/gov-lsp/mcp.go` — MCP stdio server (`gov-lsp mcp` subcommand): implements
+  MCP 2024-11-05 protocol with `gov_check_file` and `gov_check_workspace` tools
+- `cmd/gov-lsp/main.go` — dispatches `mcp` subcommand alongside `check` and server
+- `scripts/mcp-start.sh` — auto-build wrapper; builds `gov-lsp` if absent, then
+  exec's into MCP mode
+- `.mcp.json` — added `gov-lsp` MCP server entry (via `scripts/mcp-start.sh`)
+- `.devcontainer/devcontainer.json` — Go 1.24 devcontainer with `postCreateCommand`
+  that builds `gov-lsp` immediately
+- `.github/workflows/copilot-setup-steps.yml` — builds `gov-lsp`, installs on PATH,
+  prints agent instructions before GitHub Copilot agent session starts
+- `.github/workflows/ci.yml` — added `policy-check` step (informational, `|| true`)
+- `.github/copilot-instructions.md` — updated with policy enforcement section,
+  compliance commands, violation response protocol
+- `policies/security.rego` — new content-based policy: detects hardcoded credentials
+  and API keys in source files using regex; excludes test/example/template files
+- `AGENTS.md` — added "Policy Enforcement in the Agent Loop" section documenting
+  hook, MCP, CI gate, and Copilot integration
+- `Makefile` — added `setup` target and `make setup` to help text
+- `docs/adr/0006-agent-loop-integration.md` — ADR for hook + MCP decision
+- `docs/adr/README.md` — updated index with ADR 0006
+- `scripts/lsp-start.sh` — auto-build wrapper for LSP server mode
+- `.claude/lsp.json` — registers gov-lsp as a Language Server for Claude Code
+- `.github/lsp.json` — registers gov-lsp as a Language Server for GitHub Copilot Agent
+
+**Verification (20 tests, 0 failures):**
+
+Hook layer — tested with mock binary (real binary needs CI for OPA source):
+```
+PASS  hook syntax (bash -n)
+PASS  lowercase .md Write → exit 1 + violation message surfaced inline
+PASS  SCREAMING_SNAKE_CASE .md Write → exit 0 (clean)
+PASS  .go file Edit → exit 0 (no policy applies)
+PASS  missing file_path in stdin → exit 0 (fail-open, never blocks agent)
+PASS  garbage/empty JSON input → exit 0 (fail-open)
+PASS  dash-named .md → exit 1 + fix suggestion (BAD_NAME.md → BAD_NAME.md)
+```
+
+MCP protocol layer — simulated full handshake:
+```
+PASS  .mcp.json valid JSON, gov-lsp entry present
+PASS  initialize → protocolVersion + serverInfo.name = gov-lsp
+PASS  notifications/initialized → no response (correct for notification)
+PASS  tools/list → gov_check_file + gov_check_workspace both present
+PASS  tools/call gov_check_file → content[0].type = text
+```
+
+Rego policy layer:
+```
+PASS  filenames.rego — package governance.filenames + deny rule present
+PASS  security.rego — package governance.security + deny rule present
+PASS  security regex: api_key = "..." (unquoted key) → match
+PASS  security regex: "client_secret": "..." (JSON quoted key) → match
+PASS  security regex: password = "..." → match
+PASS  security regex: short value "short" → no match (safe)
+PASS  security regex: env var reference → no match (safe)
+```
+
+Requires real binary (CI runs these on push):
+```
+SKIP  go build ./...  (OPA source zip not in local module cache, no network)
+SKIP  go test -race ./...
+SKIP  scripts/smoke_test.sh
+SKIP  gov-lsp check . (self-governance run)
+```
+
+**Architecture:**
+
+Four enforcement layers, each targeting a different integration point:
+
+```
+Claude Code / GitHub Copilot Agent (native LSP client)
+  └─ .claude/lsp.json / .github/lsp.json
+       └─ lsp-start.sh → gov-lsp (LSP server mode)
+            └─ textDocument/publishDiagnostics (streaming, real-time)
+
+Claude Code (iOS trigger, PostToolUse hook)
+  └─ .claude/settings.json
+       └─ policy-gate.sh → gov-lsp check <file>
+            └─ exit 1 + violation text on violation
+
+Claude Code / Copilot / any agent (explicit MCP call)
+  └─ .mcp.json
+       └─ mcp-start.sh → gov-lsp mcp
+            └─ gov_check_file / gov_check_workspace
+
+GitHub Copilot Agent / CI (enforcement gate)
+  └─ copilot-setup-steps.yml / ci.yml
+       └─ gov-lsp check .
+
+All paths → internal/engine/rego.go → policies/*.rego
+```
+
+---
+
 ## Next Steps
 
-1. W-0003 — `textDocument/codeAction` handler for rename fix (makes VS Code offer one-click fix)
-2. W-0015 — VS Code extension wrapper (live in-editor diagnostics for VS Code users)
-3. W-0012 — MCP wrapper (`gov-lsp-mcp`) — enables Claude Code / Copilot Agent without an editor
-4. W-0014 — `gov-lsp-governance` agent skill (SKILL.md + `gov-lsp check`)
-5. W-0016 — GitHub Actions CI integration
+1. W-0003 — `textDocument/codeAction` handler for rename fix (one-click fixes in editors)
+2. W-0015 — VS Code extension wrapper (live in-editor diagnostics)
+3. W-0014 — `gov-lsp-governance` agent skill
+4. W-0004 — Policy hot-reload
+5. W-0007 — Content policies (Go package comment enforcement, go-header)

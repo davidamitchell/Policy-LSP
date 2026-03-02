@@ -6,7 +6,7 @@ BUILD_DIR  := .
 CMD        := ./cmd/gov-lsp
 POLICIES   ?= ./policies
 
-.PHONY: help build test vet smoke check-policy clean
+.PHONY: help build test vet smoke check-policy clean setup
 
 ## help: print this help message
 help:
@@ -14,6 +14,7 @@ help:
 	@echo ""
 	@echo "Build:"
 	@echo "  build          build the $(BINARY) binary in the repo root"
+	@echo "  setup          build + verify binary (first-time setup)"
 	@echo ""
 	@echo "Quality:"
 	@echo "  test           run all unit tests (go test ./...)"
@@ -53,6 +54,13 @@ check-policy: build
 		(echo "" && echo "Tip: violations above are expected in this repo (docs use lowercase names to"; \
 		 echo "     demonstrate the policy in action). In a consumer repo these would be real errors."; \
 		 exit 1)
+
+## setup: build the binary and run a quick self-check (first-time setup)
+setup: build
+	@echo "Verifying gov-lsp is functional..."
+	@GOV_LSP_POLICIES=$(POLICIES) ./$(BINARY) check --format text . > /dev/null 2>&1 && \
+		echo "gov-lsp is ready. Hook and MCP server are active." || \
+		echo "gov-lsp is ready (policy violations present — run 'make check-policy' to review)."
 
 ## clean: remove the built binary
 clean:

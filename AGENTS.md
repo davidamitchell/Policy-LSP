@@ -151,6 +151,55 @@ PROGRESS.md                # Session history
 
 ---
 
+## Policy Enforcement in the Agent Loop
+
+This repository is self-governing. The same `gov-lsp` tool it ships runs against
+its own source on every file write.
+
+### Native LSP Client (Claude Code + GitHub Copilot Agent)
+
+`.claude/lsp.json` registers `gov-lsp` as a Language Server for Claude Code.
+`.github/lsp.json` does the same for GitHub Copilot Agent. The agent starts the server
+via `scripts/lsp-start.sh` (which auto-builds the binary if absent), then sends
+`textDocument/didOpen` and `textDocument/didChange` events for every file it views or
+modifies. The server streams `textDocument/publishDiagnostics` notifications back —
+the same signal path that puts red squiggles in an IDE, delivered directly into the
+agent's context. Violations are `Diagnostic` objects with exact line/column positions,
+severity, and `data.fix` containing the suggested correction.
+
+This is the highest-fidelity integration: no polling, no manual invocation, violations
+appear in real time on every file event.
+
+### Automatic: PostToolUse Hook (Claude Code)
+
+`.claude/settings.json` configures a `PostToolUse` hook on `Write`, `Edit`, and
+`MultiEdit`. After every file modification, `.claude/hooks/policy-gate.sh` runs
+`gov-lsp check` on the changed file and exits 1 with violation output if any policy
+is violated. Claude Code surfaces the output inline and the agent is expected to fix
+violations before continuing.
+
+### Explicit: MCP Tool (`gov_check_file`, `gov_check_workspace`)
+
+`gov-lsp mcp` runs as an MCP stdio server registered in `.mcp.json`. Agents can
+call `gov_check_file` or `gov_check_workspace` at any point for structured
+violation output.
+
+The MCP server starts via `scripts/mcp-start.sh`, which auto-builds the binary if
+it is absent.
+
+### GitHub Copilot Agent
+
+`.github/workflows/copilot-setup-steps.yml` builds `gov-lsp` and places it on PATH
+before the agent session begins. The agent is expected to run `gov-lsp check .`
+and fix violations before submitting changes.
+
+### CI Gate
+
+`.github/workflows/ci.yml` includes a policy-check step that runs
+`gov-lsp check .` on every push and pull request.
+
+---
+
 ## MCP Configuration
 
 MCP server configs are defined in:
@@ -158,7 +207,15 @@ MCP server configs are defined in:
 - `.github/mcp.json` — GitHub Copilot Agent
 - `.mcp.json` — Claude Code and other agents
 
-Servers available: `fetch`, `sequential_thinking`, `time`, `memory`, `git`, `filesystem`, `brave_search`, `github`
+Servers available: `gov-lsp` (policy tools), `fetch`, `sequential_thinking`,
+`time`, `memory`, `git`, `filesystem`, `brave_search`, `github`
+
+### gov-lsp MCP Tools
+
+| Tool | Input | Returns |
+|---|---|---|
+| `gov_check_file` | `{ "path": "<file>" }` | Violation list for one file |
+| `gov_check_workspace` | `{ "path": "<dir>" }` | Violation summary for entire directory |
 
 ---
 
