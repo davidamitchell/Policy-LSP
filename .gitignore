@@ -20,8 +20,8 @@ coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# vendor/ is committed intentionally — enables network-free builds in agent
+# environments and CI. Populate with: make vendor
 
 # Go workspace file
 go.work

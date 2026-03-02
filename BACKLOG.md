@@ -278,3 +278,232 @@ updated: 2026-03-01
 ### Context
 
 The `gov-lsp check` subcommand returns exit code 1 on violations. The CI step closes the loop: governance violations are surfaced on every PR even when no IDE extension is installed.
+
+---
+
+## W-0017
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`textDocument/didChange` is tested at both unit and e2e level. Unit: the handler debounce fires and calls `Evaluate` after the timer elapses; a second change within the debounce window does not double-fire. E2e: the binary receives a `didChange` event after `didOpen` and emits a second `publishDiagnostics` notification with correct content. The debounce timer (`time.AfterFunc`) goroutine lifecycle is verified — no goroutine leak after shutdown.
+
+### Context
+
+`didChange` is the primary LSP event: editors emit it on every keystroke. PR #3 delivered zero tests for this method. The handler contains a 200 ms debounce using `time.AfterFunc` that captures the request context in a goroutine closure — the most likely source of race conditions. Identified in the PR #3 audit (issue `docs/issues/issue-pr3-audit-2026-03-02.md`, C-1).
+
+---
+
+## W-0018
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+All three inline Rego policy copies in the test suite are replaced with a shared reference to the real on-disk policies. Option A: call `engine.NewFromDir("../../policies")` directly in tests. Option B: add a golden-file test that reads `policies/filenames.rego` and asserts it matches a known hash/content, failing loudly if the file changes without updating tests. Either way, a policy change to `policies/filenames.rego` automatically causes a test failure instead of silently testing stale behaviour.
+
+### Context
+
+Three test files contain identical verbatim inline copies of the filenames Rego policy (`cmd/gov-lsp/check_test.go`, `internal/engine/rego_test.go`, `internal/lsp/handlers_test.go`). None are validated against the disk file. Identified in PR #3 audit (C-2).
+
+---
+
+## W-0019
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`internal/engine/rego_test.go` includes tests for `governance.security`: at least one test proves a hardcoded credential string produces a `hardcoded-credential` violation, and at least one proves a non-credential string does not. LSP e2e: a `didOpen` with a violating file content triggers `publishDiagnostics` containing the security diagnostic. The `check` subcommand test also exercises the security policy.
+
+### Context
+
+`security.rego` is the highest-stakes policy (credential leakage) and has zero test coverage at any level in PR #3. Identified in PR #3 audit (§2.3 significant gaps).
+
+---
+
+## W-0020
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`TestE2E_Shutdown` asserts that the process exits with code 0 after a well-formed `shutdown` + `exit` LSP sequence. If the server exits non-zero (panic, unhandled error) the test fails.
+
+### Context
+
+The current test accepts any exit code with the comment "any exit code is acceptable (SIGKILL from cleanup vs clean exit)". The LSP specification requires exit code 0 after a clean shutdown. A panicking server would pass the current test. Identified in PR #3 audit (C-3).
+
+---
+
+## W-0021
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`cmd/gov-lsp/e2e_test.go` includes a test that opens a `.go` file without a package comment via `textDocument/didOpen` and asserts that `publishDiagnostics` contains a `missing-package-comment` diagnostic. This proves the full pipeline — LSP → engine → content policy → diagnostic — works end-to-end, not just the filenames policy path.
+
+### Context
+
+PR #3 `rego_test.go` has unit tests for the content policy at the engine level but no LSP e2e test exercises the full pipeline with a content-policy violation. Identified in PR #3 audit (§2.3).
+
+---
+
+## W-0022
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`TestRunCheck_SelfGovernance_DetectsRepoViolations` asserts `count > 0` — that is, the self-governance run actually found violations in the repo's own `docs/` directory (which contains intentional lowercase filenames). The test currently logs the count but does not assert it, meaning the property "this repo self-governs" is not machine-verified.
+
+### Context
+
+The self-governance property is the repo's primary claim. If the check runs but finds no violations, the test passes silently — which would mean the policy is broken. Identified in PR #3 audit (§2.3).
+
+---
+
+## W-0023
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`filenameFromURI` calls `url.PathUnescape` before `filepath.Base`. A file URI containing percent-encoded characters (e.g., `file:///workspace/my%20file.md`) correctly extracts `my file.md` rather than `my%20file.md`. A unit test covers the encoded-path case.
+
+### Context
+
+The current implementation strips `file://` and calls `filepath.Base` directly. Percent-encoded paths produce filenames containing `%XX` sequences which confuse the Rego regex. A valid uppercase file in a path with a space would be falsely flagged. Identified in PR #3 audit (§2.4, latent protocol bug).
+
+---
+
+## W-0024
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`.claude/hooks/policy-gate.sh` has automated test coverage (bats or shunit2) covering: (1) binary not present → exits 0 silently (fail-open path); (2) `jq` absent → Python fallback extracts file path correctly; (3) violation present → exits 1 with violation message visible in output; (4) clean file → exits 0.
+
+### Context
+
+The PostToolUse hook is the enforcement path active on every Write/Edit/MultiEdit in Claude Code. It has zero test coverage. The fail-open path (binary absent → silent exit 0) is the most dangerous: it means enforcement is silently inactive without the agent knowing. Identified in PR #3 audit (§3.5).
+
+---
+
+## W-0025
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+A test verifies that running `gov-lsp --log-level debug` produces log output to stderr and `gov-lsp --log-level error` suppresses info/debug messages. The `--log-level` flag is exercised and its effect on output is asserted.
+
+### Context
+
+W-0006 added `--log-level` and the flag is wired, but PR #3 never asserts its effect. The feature is "claimed delivered" but unverified. Identified in PR #3 audit (§2.3).
+
+---
+
+## W-0026
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`docs/` (or `AGENTS.md`) is updated to clearly document that the LSP server, `check` CLI, and MCP tool are all transport interfaces to the same `engine.Evaluate()` call — not IDE-only tools. Includes an architecture diagram showing the three transport paths converging on the engine.
+
+### Context
+
+The current documentation implies the LSP server requires an IDE. In practice, the agent environment can manage the LSP lifecycle directly (as the e2e test harness demonstrates), and the check CLI and MCP tool are equally valid for non-IDE consumers. Identified in PR #3 audit (B-10).
+
+---
+
+## W-0027
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`.github/workflows/ci.yml` includes a job that: (1) runs `make build` to verify the binary always compiles, and (2) runs `make check-policy` (or `./gov-lsp check --format text .`) and verifies that the violations found are exactly the expected intentional ones in `docs/`. An unexpected violation (or zero violations when some are expected) fails the job.
+
+### Context
+
+Currently CI runs tests but does not verify that the binary builds cleanly from a cold checkout or that self-governance finds exactly the expected violations. Identified in PR #3 audit (B-11).
+
+---
+
+## W-0028
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`copilot-setup-steps.yml` is verified to: (1) put the `gov-lsp` binary on PATH without an explicit path prefix, (2) allow `gov-lsp check <file>` to work from any working directory, and (3) pre-build the binary before the Copilot agent session starts. A smoke test in the workflow confirms the binary is reachable.
+
+### Context
+
+The workflow exists but its end-to-end correctness (binary on PATH, no prefix needed, works before any Copilot turns) has not been verified. Identified in PR #3 audit (B-13).
+
+---
+
+## W-0029
+
+status: ready
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`go mod download` succeeds in the Claude Code web sandbox without vendoring. Before running `go mod download`, `NO_PROXY` is overridden to remove `*.googleapis.com` and `*.google.com` so Go routes `storage.googleapis.com` and `proxy.golang.org` through the Anthropic egress proxy (which allows both). For MCP GitHub tools: `global-agent` is installed and `NODE_OPTIONS=--require global-agent/bootstrap` is set in `scripts/mcp-start.sh` so the Node.js MCP server respects `GLOBAL_AGENT_HTTPS_PROXY` and can reach `api.github.com`.
+
+### Context
+
+Two distinct network failure modes affect the Claude Code web sandbox. (1) `go mod download` fails because `NO_PROXY=...*.googleapis.com...` causes Go to bypass the egress proxy and attempt direct DNS at `[::1]:53`, which fails (`CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true`). The proxy WOULD work — `storage.googleapis.com` is in the JWT allowlist — but `NO_PROXY` prevents it from being tried. (2) MCP GitHub tools return `-32603: fetch failed` because Node.js `https.request` does not natively respect `HTTPS_PROXY`. The `global-agent` npm package fixes this by monkey-patching Node's http/https modules. Full diagnosis in `docs/issues/issue-pr3-audit-2026-03-02.md` §6.
+
+### Notes
+
+Fix for (1): `export NO_PROXY=$(echo "${NO_PROXY:-}" | sed 's/,\*\.googleapis\.com//g; s/,\*\.google\.com//g'); export no_proxy="$NO_PROXY"` before `go mod download`. Fix for (2): `npm install -g global-agent` in `copilot-setup-steps.yml` or as a devcontainer step; then set `NODE_OPTIONS=--require global-agent/bootstrap` in `scripts/mcp-start.sh`. The vendoring approach (W-0014 dependency: `make vendor`) sidesteps (1) entirely and is the preferred day-to-day path.
+
+---
+
+## W-0030
+
+status: done
+created: 2026-03-02
+updated: 2026-03-02
+
+### Outcome
+
+`.claude/hooks/session-start.sh` pre-builds the `gov-lsp` binary at session start before any agent writes occur. Registered as a `SessionStart` hook in `.claude/settings.json`. Vendor-aware: uses `-mod=vendor` when `vendor/` is present, falls back to `go mod download` (with `NO_PROXY` fix) otherwise. Idempotent: skips build if binary already exists.
+
+### Context
+
+Without the SessionStart hook, all three enforcement paths (PostToolUse hook, LSP server, MCP tool) are silently inactive when the binary is absent. `lsp-start.sh` and `mcp-start.sh` attempt inline builds but fail without network or vendor/. The SessionStart hook fires before any agent turn, ensuring enforcement is always active. Implemented in this session (2026-03-02).
+
