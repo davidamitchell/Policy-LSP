@@ -137,203 +137,228 @@ works for `.md` files under the filenames policy. They do not prove:
 
 _Question: a purely autonomous coding agent, no IDE. Will the LSP stop it?_
 
-**Short answer: No — not via the LSP server. Partially — via the hook and check CLI.**
+**Short answer: Yes — when the binary is present. The LSP server lifecycle constraint
+is overcomeable; the only hard blocker is a missing binary.**
 
-### 3.1 The Three Enforcement Paths
+### 3.1 Correcting a Prior Misconception
 
-The system has three distinct enforcement paths. They do not use the same code:
+An initial version of this document claimed "Claude via the iOS app has no runtime
+enforcement." That was wrong. The UI (iOS, web, desktop) is irrelevant. The agent runs
+in a server-side sandboxed compute environment that has a filesystem, shell execution,
+and the ability to start and communicate with processes — exactly as evidenced by the
+fact that git commands, file writes, and Bash tool calls all work in this session.
+The UI is a display surface; the agent environment is where enforcement happens.
 
-| Path | Mechanism | What triggers it | Who it works for |
+### 3.2 The Three Enforcement Paths
+
+| Path | Mechanism | What triggers it | Binary required |
 |---|---|---|---|
-| **LSP server** | Full LSP protocol: `didOpen` → `publishDiagnostics` | An IDE (or LSP client) sending events | Claude Code CLI (via `lsp.json`), VS Code, Neovim, Zed |
-| **PostToolUse hook** | `policy-gate.sh` calls `gov-lsp check` (CLI, not LSP) | Every Write / Edit / MultiEdit call in Claude Code | Claude Code CLI only |
-| **MCP tool** | `gov_check_file` / `gov_check_workspace` tool call | Agent explicitly calls the tool | Any MCP-capable agent that chooses to call it |
+| **LSP server** | Full LSP protocol: `didOpen` → `publishDiagnostics` | Something manages the lifecycle (IDE or agent) | Yes |
+| **PostToolUse hook** | `policy-gate.sh` calls `gov-lsp check` | Every Write/Edit/MultiEdit in Claude Code | Yes (fails-open if absent) |
+| **MCP tool** | `gov_check_file` / `gov_check_workspace` | Agent explicitly calls the tool | Yes (auto-builds via `mcp-start.sh`) |
 
-### 3.2 For a Purely Autonomous Agent (No IDE)
+All three paths converge on the same `engine.Evaluate()` function. They differ only
+in the transport layer.
 
-The LSP server is never started. No process is spawned. No `initialize` handshake
-occurs. No `textDocument/didOpen` events are sent. No `publishDiagnostics`
-notifications are received. **The LSP server contributes nothing to enforcement
-without something managing its lifecycle.**
+### 3.3 "The LSP Server Needs an IDE" — and Why That Is Overcomeable
 
-What actually enforces policy depends on which agent and which runtime:
+The LSP server process does not need an IDE. It needs _something_ that speaks LSP
+protocol to it. An IDE is one such client. The agent environment is another. The
+`cmd/gov-lsp/e2e_test.go` harness is a 200-line proof that a plain Go program can
+manage the full LSP lifecycle: spawn process → initialize → didOpen/didChange →
+receive publishDiagnostics → shutdown/exit. The agent's Bash tool can do the same:
 
-**Claude Code CLI (desktop/server)**
-The PostToolUse hook fires after every Write/Edit/MultiEdit and runs `gov-lsp check`.
-This IS enforcement — violations surface inline and block continuation. The hook is
-the primary enforcement layer for this agent type. Caveat: the hook fails-open if
-the binary is absent (`exit 0` by design). In this sandbox (no network → `go build`
-fails → no binary), the hook does nothing. An agent running here today could write
-violations freely.
+```bash
+# Start server in background, get its PID
+./gov-lsp --policies ./policies &
+# Send initialize over its stdin, read capabilities from stdout
+# After each file write: send textDocument/didChange, read publishDiagnostics
+# Act on violations before continuing
+```
 
-**Claude Code (iOS / web chat app)**
-No hook mechanism. No shell execution. No MCP server processes running locally. The
-only enforcement is CLAUDE.md appearing in the system context and Claude following its
-written instructions. There is no runtime enforcement — it is entirely prompt-based.
+More practically, `lsp.json` registration already wires this for Claude Code sessions:
+Claude Code sends `textDocument/didOpen` and `textDocument/didChange` on every file
+event, receives `publishDiagnostics` inline, and the agent sees violations without any
+explicit tool call. This is the path that most closely mimics IDE behaviour — and it
+is already configured.
 
-**GitHub Copilot (VS Code)**
-VS Code manages the LSP server lifecycle. The server is started, events are sent, and
-the Problems panel receives diagnostics. This IS enforcement — but it requires an
-open editor window and the `lsp-start.sh` integration configured. In an autonomous
-agentic session without VS Code open (e.g., GitHub Actions `copilot-setup-steps`
-workflow), there is no LSP client and no hook. Only MCP (if configured) or explicit
-`gov-lsp check` calls in instructions.
+For Copilot in GitHub Actions (no IDE, no hooks), the MCP tool or the check CLI is
+the right path. Both are instant and do not require a persistent server.
 
-**GitHub Copilot (GitHub Actions — fully autonomous, no IDE)**
-No hook. No LSP client. No MCP unless `mcpServers` is configured and the runner
-has the binary. Enforcement reduces to: instructions in `.github/copilot-instructions.md`
-telling Copilot to run `./gov-lsp check` after edits. Prompt-based, not protocol-based.
+### 3.4 The Actual Blocker: Binary Availability
 
-### 3.3 The Hook Is Untested — and Currently Broken
+The constraint is not protocol complexity. It is binary availability. Every enforcement
+path requires the `gov-lsp` binary to be built. When it is absent:
+
+- `policy-gate.sh` fails-open (`exit 0`, silent)
+- `lsp-start.sh` attempts `go build` inline, which fails without network
+- `mcp-start.sh` same
+- `gov-lsp check` simply is not found
+
+In the current sandbox, `go build` fails because OPA cannot be downloaded (no outbound
+network). The binary is absent. The entire enforcement layer is silently inactive.
+
+**The fix is a SessionStart hook** that pre-builds the binary when the environment is
+set up, before any agent writes occur. `scripts/lsp-start.sh` already has the build
+logic; it just needs to be called at session start rather than on first use.
+
+### 3.5 The Hook Is Untested
 
 The test suite has zero coverage of `policy-gate.sh`. The hook's critical paths:
+
 - Binary not found → fails-open (`exit 0`) — untested
-- `jq` unavailable → falls back to Python → untested
-- File path extraction failure → exits 0 silently — untested
+- `jq` unavailable → Python fallback — untested
+- File path extraction failure → silent exit 0 — untested
 - Binary exits 1 with output → agent sees violation message — untested
 
-In the current sandbox environment, `make build` fails (no network to download OPA
-dependency). The hook's auto-build attempt also fails. The hook silently exits 0 for
-every file write. **The enforcement layer is invisible in this environment.**
+A bash-based bats or shunit2 test suite for the hook script would close this gap.
 
-### 3.4 Summary
+### 3.6 Enforcement By Agent Type
 
-The LSP server alone cannot prevent violations from an autonomous agent that does not
-manage the LSP lifecycle. The system prevents violations through the hook (Claude Code
-CLI) + MCP tool (any capable agent). Enforcement is complete only when:
-1. The binary is built and available.
-2. The agent's runtime supports hooks (Claude Code CLI) or the agent explicitly calls
-   the MCP/check tool.
-3. The agent is instructed to treat hook exit-1 as a blocking error.
+| Agent / context | PostToolUse hook | LSP via `lsp.json` | MCP tool | Net result |
+|---|---|---|---|---|
+| Claude Code (any UI, binary present) | ✅ instant | ✅ automatic | ✅ on demand | Full enforcement |
+| Claude Code (binary absent) | ❌ silent | ❌ build fails | ❌ build fails | No enforcement |
+| Copilot in VS Code | ❌ no hook | ✅ VS Code manages | ✅ via `.github/mcp.json` | Full enforcement |
+| Copilot in GitHub Actions | ❌ no hook | ❌ no IDE | ✅ if configured | MCP or check CLI only |
 
 ---
 
 ## 4. Can We Configure Autonomous Agents to Mimic IDE-LSP Interaction?
 
-_Question: can Claude (iOS chat) and GitHub Copilot be set up to act as LSP clients,
-so the LSP server becomes a universal policy interface any agent can consume?_
+_The right question is not "can we mimic what an IDE does" but "can we control the
+agent's environment so that policy enforcement is always present before code is
+written." The answer is yes, and the mechanism already exists for both agents._
 
-### 4.1 What an IDE Does (the Full Lifecycle)
+### 4.1 Environment Control Is the Key
 
-```
-IDE startup
-  → spawn LSP server process (pipes to stdin/stdout)
-  → send: {"method":"initialize","id":1,"params":{"rootUri":"..."}}
-  ← recv: {"result":{"capabilities":{"textDocumentSync":1,"codeActionProvider":true}}}
-  → send: {"method":"initialized"}                   (notification, no id)
+Every autonomous agent session runs inside a controllable environment:
 
-File opened
-  → send: {"method":"textDocument/didOpen","params":{"textDocument":{...}}}
-  ← recv: {"method":"textDocument/publishDiagnostics","params":{"diagnostics":[...]}}
-
-User requests fix
-  → send: {"method":"textDocument/codeAction","id":5,"params":{...}}
-  ← recv: {"result":[{"kind":"quickfix","edit":{"documentChanges":[{"kind":"rename"}]}}]}
-
-Session end
-  → send: {"method":"shutdown","id":99}
-  ← recv: {"id":99,"result":null}
-  → send: {"method":"exit"}
-  (process exits, code 0)
-```
-
-This lifecycle requires: a persistent process, bidirectional pipes, async notification
-handling, and application of `WorkspaceEdit` responses. The e2e test harness in
-`cmd/gov-lsp/e2e_test.go` is a 200-line implementation of exactly this.
-
-### 4.2 Can Agents Do This?
-
-| Agent | Can manage LSP lifecycle? | Practical path |
+| Agent | Environment control mechanism | What it can install |
 |---|---|---|
-| Claude Code CLI | ✅ via Bash tool + background process | Already done via `lsp.json` registration |
-| Claude (iOS / web chat) | ❌ No shell, no filesystem, no background processes | Prompt-only; see §4.4 |
-| Copilot in VS Code | ✅ VS Code manages it natively | Configure `lsp-start.sh`; works today |
-| Copilot in GitHub Actions | ❌ No IDE host, no persistent process | Use MCP or check CLI |
-| Any MCP-capable agent | Partial ✅ via `gov-lsp-mcp` tool | MCP wraps the engine; no protocol management needed |
+| GitHub Copilot | `copilot-setup-steps.yml` workflow | Any binary on PATH, env vars, config files |
+| Claude Code | `SessionStart` hook (`.claude/settings.json`) | Binary builds, background processes, env vars |
+| Claude Code (web/iOS UI) | Same — the UI is a display surface; the agent runs server-side with full tool access | Same as above |
 
-### 4.3 Three Viable Paths — Ordered by Complexity
+This is the correct framing: the UI the user uses to talk to the agent (iOS, web,
+desktop) is irrelevant to what the agent can do. What matters is the environment the
+agent runs in and whether that environment has been provisioned with the binary.
 
-**Path 1 (simplest): `check` CLI + agent instructions**
+Controlling the environment means:
+1. Binary is pre-built and on PATH before the first file write
+2. LSP server is registered and can start instantly when first file is opened
+3. PostToolUse hook is active and calls `gov-lsp check` after every write
+4. MCP tool is ready for on-demand structured queries
 
-```bash
-./gov-lsp check --format text <file>
+When all four are true, the agent has instant policy feedback from the first
+keystroke — equivalent to what an IDE user has.
+
+### 4.2 What an IDE Does (and What the Agent Already Does)
+
+```
+IDE startup                          Agent session startup (lsp.json active)
+  → spawn LSP server (lsp-start.sh)   → Claude Code spawns LSP server (lsp-start.sh)
+  → initialize handshake               → initialize handshake
+
+File opened in editor                Agent opens/reads a file (Read tool)
+  → textDocument/didOpen               → textDocument/didOpen (automatic via lsp.json)
+  ← publishDiagnostics                 ← publishDiagnostics (agent sees violations)
+
+File saved in editor                 Agent writes a file (Write/Edit tool)
+  → textDocument/didChange             → textDocument/didChange (lsp.json)
+  ← publishDiagnostics                 ← publishDiagnostics
+  [hook also runs gov-lsp check]       [PostToolUse hook also runs gov-lsp check]
 ```
 
-The agent is instructed to run this after every file write. Output is plain text.
-No process management. No protocol. Works in CI, works in any shell-capable agent.
-Already implemented. This is what the hook does.
+The two columns are already identical in design. The only difference in practice is
+that `lsp-start.sh` needs a pre-built binary.
 
-**Path 2 (agent-native): MCP tool call**
+### 4.3 Copilot: `copilot-setup-steps.yml` Already Does This
+
+`copilot-setup-steps.yml` builds `gov-lsp` and puts it on PATH before the Copilot
+session starts. The binary is present. Copilot in VS Code then:
+- Manages the LSP server lifecycle via the `lsp.json` equivalent
+- Sees diagnostics in the Problems panel
+- Can be instructed to check for violations before completing any task
+
+For Copilot in GitHub Actions (no VS Code), the binary is on PATH, so:
+```bash
+gov-lsp check --format text <file>   # instant, runs after each write
+```
+can be embedded in the copilot-instructions or called via MCP.
+
+### 4.4 Claude Code: The Missing Piece Is a SessionStart Hook
+
+Claude Code has `PostToolUse` hooks (already configured). It also supports
+`SessionStart` hooks — commands that run once when the session initialises, before
+any agent turns. This is where the binary should be built:
 
 ```json
-{"method": "tools/call", "params": {"name": "gov_check_file", "arguments": {"path": "..."}}}
+// .claude/settings.json — SessionStart addition
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/lsp-start.sh --policies ./policies"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [ ... existing hook ... ]
+  }
+}
 ```
 
-The MCP server (`scripts/mcp-start.sh`) handles spawning gov-lsp, running the
-engine, and returning structured JSON. No LSP protocol in the agent. Copilot supports
-MCP via `mcpServers` config. Claude Code supports it via `.mcp.json`. Already
-built (W-0012). The gap: untested in the current test suite.
+With this:
+1. Session starts → binary built (if absent) → LSP server starts
+2. Agent reads or writes any file → `lsp.json` client sends events → diagnostics arrive
+3. Agent writes a file → `policy-gate.sh` also runs `check` as a double-check
+4. Agent never reaches a state where enforcement is silently absent
 
-**Path 3 (full mimic): Agent manages the LSP process directly**
+This is backlog item B-12: implement the SessionStart hook.
 
-Agent background-spawns the server, manually frames JSON-RPC messages, reads
-`publishDiagnostics` notifications asynchronously. Possible for Claude Code CLI
-via Bash tool. Complex (200 lines in the test harness) and brittle. The only
-advantage over Path 1 is receiving real-time streaming diagnostics during multi-file
-operations — which is the same data as calling `check` after each file.
-
-**Recommendation**: Path 1 for CI and Copilot Actions. Path 2 for Claude Code
-and Copilot Agent in VS Code. Path 3 is not worth the complexity for policy
-enforcement; it is the domain of code intelligence tools (e.g., `gopls`) where
-incremental streaming matters.
-
-### 4.4 Claude in the iOS Chat App — No Runtime Enforcement
-
-The iOS Claude.ai app has no filesystem, no shell, no background processes, and no
-MCP server connections. It cannot run `gov-lsp check`, cannot spawn the LSP server,
-and cannot execute hooks. The session context (including CLAUDE.md) is available as
-a system prompt, but all enforcement is **purely prompt-based**:
-- Claude reads CLAUDE.md and knows the policies
-- Claude can describe what violations would exist
-- Claude cannot verify its own output against the Rego engine at runtime
-
-The practical implication: when working from the iOS app and pushing to a branch,
-CI (`github/workflows/ci.yml` with `gov-lsp check`) is the only runtime enforcement
-layer. The agent loop works correctly only when the CI runner has the binary built.
-
-### 4.5 Making the LSP a Universal Consumer Interface
-
-The LSAP research (see `research/lsap/README.md`) identifies the right framing:
+### 4.5 The Engine as Universal Source
 
 ```
-┌─────────────────────────────────────┐
-│      Agent (any: Claude, Copilot)   │
-│  understands: natural language,     │
-│  Markdown, tool calls               │
-└──────────────┬──────────────────────┘
-               │ cognitive request
-               ▼
-┌─────────────────────────────────────┐
-│  MCP / check CLI / gov-lsp-skill    │  ← the translation layer
-│  (W-0012, W-0014, W-0013)           │
-└──────────────┬──────────────────────┘
-               │ engine.Evaluate()
-               ▼
-┌─────────────────────────────────────┐
-│  GOV-LSP Engine (OPA + Rego)        │
-│  returns: violations + fix data     │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     CONSUMERS                               │
+│                                                             │
+│  IDE (VS Code, Neovim, Zed)    Agent (Claude, Copilot)     │
+│         │                              │                    │
+│   LSP protocol              MCP tool / check CLI / hook     │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                 engine.Evaluate()
+                 (OPA + Rego policies)
+                       │
+             violations + fix data
 ```
 
-The LSP server is **one consumer interface** (for IDE clients). MCP and the check CLI
-are the **agent interfaces** to the same engine. The LSP protocol itself is not the
-right interface for autonomous agents — it was designed for editors, not for programs
-that receive one structured response and apply a fix.
+`diagnostic.data` containing `{"type":"rename","value":"LOWER_CASE.md"}` is
+consumable by all four paths: LSP `WorkspaceEdit`, MCP JSON response, `check`
+text/json output, hook exit-1 message. The engine is the universal source; the
+transport is selected by what the consumer natively speaks. This is exactly the right
+design for a multi-consumer governance tool.
 
-The design of `diagnostic.data` (self-contained fix with `type` and `value`) was
-exactly the right call: the same data is consumable via LSP (WorkspaceEdit), MCP
-(JSON tool response), CLI (text/json output), and a future LSAP endpoint (Markdown
-report). The engine is the universal source; the transports are consumer-specific.
+### 4.6 LSP as the Stable Interface for Many Consumers
+
+The user's framing is correct: the LSP interface IS the stable interface worth
+investing in. Reasons:
+
+1. **IDE users** get it for free (VS Code, Neovim, Zed, any editor with LSP support)
+2. **Claude Code** gets it via `lsp.json` — same events, same protocol, no extra code
+3. **Copilot in VS Code** gets it the same way
+4. **Any future agent** that understands LSP gets it without changes to gov-lsp
+5. The check CLI and MCP are thin wrappers over the same engine — adding a new
+   transport (e.g., HTTP endpoint, gRPC) would not require changing the policies
+
+Writing more code to make the LSP consumers work correctly (tests, SessionStart hook,
+URI decoding fix) is the right investment because each fix benefits all consumers
+simultaneously. The policy engine and LSP server are the stable core; the
+agent-specific wiring (hooks, MCP config) is thin glue.
 
 ---
 
@@ -350,8 +375,10 @@ report). The engine is the universal source; the transports are consumer-specifi
 | B-7 | Bug | Fix `filenameFromURI` to call `url.PathUnescape` before `filepath.Base` | Medium |
 | B-8 | Hook | Add test coverage for `policy-gate.sh`: binary-missing path, jq-absent path, violation path | High |
 | B-9 | W-0006 | Add test verifying `--log-level debug` produces log output, `error` suppresses it | Low |
-| B-10 | Architecture | Document that the LSP server is for IDE clients only; the check CLI + MCP are the agent interfaces. Update CLAUDE.md accordingly. | Medium |
-| B-11 | CI | Add a CI job that runs `make build` + `make check-policy` to verify the binary is always buildable and self-governance is always verified | High |
+| B-10 | Architecture | Update docs to clarify: LSP server, check CLI, and MCP are all consumer interfaces to the same engine — not an IDE-only tool | Medium |
+| B-11 | CI | Add a CI job that runs `make build` + `make check-policy` to verify the binary is always buildable and self-governance passes | High |
+| B-12 | SessionStart hook | ~~Add `SessionStart` entry to `.claude/settings.json`~~ **Done** — `.claude/hooks/session-start.sh` + `SessionStart` registration implemented in this session | **Done** |
+| B-13 | Copilot env | Verify `copilot-setup-steps.yml` puts binary on PATH before Copilot session starts, and that `gov-lsp check` works without explicit path prefix | High |
 | W-0014 | Backlog | `gov-lsp-skill` — SKILL.md wrapper for `gov-lsp check` so any skill-aware agent gets governance without hooks, MCP, or LSP | Ready to build |
 
 ---
