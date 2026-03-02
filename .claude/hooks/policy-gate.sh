@@ -7,8 +7,8 @@
 # any policy violations are found.
 #
 # Exit codes:
-#   0  no violations (or binary unavailable — fail open)
-#   1  policy violations found; output is shown to the agent
+#   0  no violations
+#   1  policy violations found, OR binary unavailable (fail closed)
 set -uo pipefail
 
 # ---- read tool context -------------------------------------------------------
@@ -38,14 +38,26 @@ if [ -x "./gov-lsp" ]; then
 elif command -v gov-lsp &>/dev/null; then
   BINARY="gov-lsp"
 else
-  # Attempt a silent build so the hook becomes active immediately.
+  # Attempt an inline build. Use -mod=vendor when vendor/ is present so this
+  # works in network-restricted environments (e.g. Claude Code web sandboxes).
   if command -v go &>/dev/null && [ -f "go.mod" ]; then
-    go build -o ./gov-lsp ./cmd/gov-lsp 2>/dev/null && BINARY="./gov-lsp" || true
+    if [ -d "./vendor" ]; then
+      go build -mod=vendor -o ./gov-lsp ./cmd/gov-lsp 2>/dev/null && BINARY="./gov-lsp" || true
+    else
+      go build -o ./gov-lsp ./cmd/gov-lsp 2>/dev/null && BINARY="./gov-lsp" || true
+    fi
   fi
 fi
 
-# Binary not available — fail open rather than blocking the agent.
-[ -z "$BINARY" ] && exit 0
+# Binary not available — fail closed to prevent silent policy bypass.
+if [ -z "$BINARY" ]; then
+  printf '\n=== GOV-LSP POLICY GATE: ENFORCEMENT UNAVAILABLE ===\n'
+  printf 'The gov-lsp binary could not be found or built.\n'
+  printf 'Policy enforcement is NOT active — violations may go undetected.\n\n'
+  printf 'To fix: run `make build` (requires Go and network, or vendor/ dir).\n'
+  printf 'See: https://github.com/davidamitchell/Policy-LSP#getting-started\n'
+  exit 1
+fi
 
 # ---- run policy check --------------------------------------------------------
 OUTPUT=$("$BINARY" check --format text "$FILE_PATH" 2>/dev/null)
