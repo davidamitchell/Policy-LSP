@@ -39,9 +39,9 @@ Agent-first scaffold — mirrors the structure of `davidamitchell/Research` but 
 
 ## W-0003
 
-status: ready
+status: done
 created: 2026-02-28
-updated: 2026-02-28
+updated: 2026-03-02
 
 ### Outcome
 
@@ -71,9 +71,9 @@ Policy hot-reload removes the need to restart the LSP server when iterating on r
 
 ## W-0005
 
-status: ready
+status: done
 created: 2026-02-28
-updated: 2026-02-28
+updated: 2026-03-02
 
 ### Outcome
 
@@ -87,9 +87,9 @@ The current `policyDir(t)` helper in `rego_test.go` resolves `../../policies` at
 
 ## W-0006
 
-status: ready
+status: done
 created: 2026-02-28
-updated: 2026-02-28
+updated: 2026-03-02
 
 ### Outcome
 
@@ -103,9 +103,9 @@ Structured logging using `log/slog` replaces `log.Printf` throughout the server.
 
 ## W-0007
 
-status: ready
+status: done
 created: 2026-02-28
-updated: 2026-02-28
+updated: 2026-03-02
 
 ### Outcome
 
@@ -119,9 +119,9 @@ The current policies directory contains only filename rules. A content-aware pol
 
 ## W-0008
 
-status: ready
+status: done
 created: 2026-02-28
-updated: 2026-02-28
+updated: 2026-03-02
 
 ### Outcome
 
