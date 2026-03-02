@@ -20,8 +20,8 @@ coverage.*
 *.coverprofile
 profile.cov
 
-# vendor/ is committed intentionally — enables network-free builds in agent
-# environments and CI. Populate with: make vendor
+# vendor/ is not committed; run `make vendor` locally if you need offline builds
+vendor/
 
 # Go workspace file
 go.work
