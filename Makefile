@@ -6,7 +6,11 @@ BUILD_DIR  := .
 CMD        := ./cmd/gov-lsp
 POLICIES   ?= ./policies
 
-.PHONY: help build test vet smoke check-policy clean setup
+# Use vendored dependencies when vendor/ exists — no network required.
+# Run `make vendor` once (with network) to populate it, then commit vendor/.
+GOFLAGS    := $(shell [ -d vendor ] && echo "-mod=vendor" || echo "")
+
+.PHONY: help build test vet smoke check-policy clean setup vendor
 
 ## help: print this help message
 help:
@@ -15,6 +19,7 @@ help:
 	@echo "Build:"
 	@echo "  build          build the $(BINARY) binary in the repo root"
 	@echo "  setup          build + verify binary (first-time setup)"
+	@echo "  vendor         download and vendor all dependencies (run once with network)"
 	@echo ""
 	@echo "Quality:"
 	@echo "  test           run all unit tests (go test ./...)"
@@ -29,17 +34,23 @@ help:
 	@echo "Variables:"
 	@echo "  POLICIES=<dir> path to .rego policy files (default: ./policies)"
 
+## vendor: download and vendor all Go dependencies into vendor/ (run once with network access)
+## After running this, commit vendor/ and all future builds require no network.
+vendor:
+	go mod download
+	go mod vendor
+
 ## build: compile the gov-lsp binary
 build:
-	go build -o $(BUILD_DIR)/$(BINARY) $(CMD)
+	go build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY) $(CMD)
 
 ## test: run the full Go test suite
 test:
-	go test ./... -count=1
+	go test $(GOFLAGS) ./... -count=1
 
 ## vet: run go vet
 vet:
-	go vet ./...
+	go vet $(GOFLAGS) ./...
 
 ## smoke: build the binary and run the end-to-end smoke test
 smoke: build
@@ -65,3 +76,4 @@ setup: build
 ## clean: remove the built binary
 clean:
 	rm -f $(BUILD_DIR)/$(BINARY)
+

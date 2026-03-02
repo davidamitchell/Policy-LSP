@@ -32,14 +32,19 @@ if [ -x "$BINARY" ]; then
   exit 0
 fi
 
-# Download Go module dependencies (populates module cache for the build)
-echo "[session-start] Downloading Go module dependencies..."
 cd "$REPO_ROOT"
-go mod download
 
-# Build the binary
-echo "[session-start] Building gov-lsp binary..."
-go build -o "$BINARY" ./cmd/gov-lsp
+# Prefer vendored dependencies (no network needed).
+# Fall back to module download when vendor/ is absent.
+if [ -d "$REPO_ROOT/vendor" ]; then
+  echo "[session-start] Building from vendor/ (no network required)..."
+  go build -mod=vendor -o "$BINARY" ./cmd/gov-lsp
+else
+  echo "[session-start] vendor/ absent — downloading Go module dependencies..."
+  go mod download
+  echo "[session-start] Building gov-lsp binary..."
+  go build -o "$BINARY" ./cmd/gov-lsp
+fi
 
 # Sanity check
 if [ ! -x "$BINARY" ]; then
