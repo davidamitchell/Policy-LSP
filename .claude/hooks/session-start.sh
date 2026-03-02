@@ -41,7 +41,19 @@ if [ -d "$REPO_ROOT/vendor" ]; then
   go build -mod=vendor -o "$BINARY" ./cmd/gov-lsp
 else
   echo "[session-start] vendor/ absent — downloading Go module dependencies..."
-  go mod download
+  # In Claude Code web sandboxes the egress proxy allows storage.googleapis.com and
+  # proxy.golang.org, but NO_PROXY contains *.googleapis.com which causes Go to bypass
+  # the proxy and attempt direct DNS — which fails (CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true
+  # means DNS only works through the proxy). Strip the wildcards so Go routes through
+  # the allowed proxy instead. See docs/issues/issue-pr3-audit-2026-03-02.md §6.2.
+  _no_proxy_orig="${NO_PROXY:-}"
+  export NO_PROXY
+  NO_PROXY=$(printf '%s' "${NO_PROXY:-}" | sed 's/,\*\.googleapis\.com//g; s/,\*\.google\.com//g')
+  export no_proxy="$NO_PROXY"
+  go mod download || true
+  # Restore original NO_PROXY for subsequent commands
+  export NO_PROXY="$_no_proxy_orig"
+  export no_proxy="$_no_proxy_orig"
   echo "[session-start] Building gov-lsp binary..."
   go build -o "$BINARY" ./cmd/gov-lsp
 fi
