@@ -10,7 +10,7 @@ POLICIES   ?= ./policies
 # Run `make vendor` once (with network) to populate it, then commit vendor/.
 GOFLAGS    := $(shell [ -d vendor ] && echo "-mod=vendor" || echo "")
 
-.PHONY: help build test vet smoke check-policy clean setup vendor
+.PHONY: help build test vet smoke test-hook check-policy clean setup vendor
 
 ## help: print this help message
 help:
@@ -25,6 +25,7 @@ help:
 	@echo "  test           run all unit tests (go test ./...)"
 	@echo "  vet            run go vet ./..."
 	@echo "  smoke          build + run the end-to-end smoke test"
+	@echo "  test-hook      build + test the policy-gate.sh hook behaviour"
 	@echo "  check-policy   run the batch policy check against the whole repo"
 	@echo "                 (demonstrates self-governance — shows real violations)"
 	@echo ""
@@ -55,6 +56,10 @@ vet:
 ## smoke: build the binary and run the end-to-end smoke test
 smoke: build
 	GOV_LSP_POLICIES=$(POLICIES) ./scripts/smoke_test.sh ./$(BINARY)
+
+## test-hook: test the policy-gate.sh PostToolUse hook behaviour
+test-hook: build
+	GOV_LSP_POLICIES=$(POLICIES) ./scripts/test_policy_gate.sh ./$(BINARY)
 
 ## check-policy: run gov-lsp in batch check mode against the whole repo.
 ## Exit code 1 if any policy violations are found.

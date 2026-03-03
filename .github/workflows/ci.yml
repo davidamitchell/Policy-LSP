@@ -46,6 +46,10 @@ jobs:
           go build -o /tmp/gov-lsp ./cmd/gov-lsp
           GOV_LSP_POLICIES=./policies bash scripts/smoke_test.sh /tmp/gov-lsp
 
+      - name: Hook test
+        run: |
+          GOV_LSP_POLICIES=./policies bash scripts/test_policy_gate.sh /tmp/gov-lsp
+
       - name: Policy check (self-governance)
         # Run gov-lsp check against the whole repo.
         # This job intentionally exits non-zero on docs/ violations (those are
