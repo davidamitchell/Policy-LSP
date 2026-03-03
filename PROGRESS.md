@@ -24,6 +24,42 @@ Last updated: 2026-03-02
 
 ## Work Log
 
+### 2026-03-02 — Session 6 (Issue #4: hook fail-open)
+
+**Problem:** The Claude hook (`policy-gate.sh`) silently exited 0 when the
+`gov-lsp` binary was unavailable (fail-open). In a Claude Code web sandbox without
+network access, the binary could not be built (no OPA dependency downloads), so the
+hook was bypassed on every file write.
+
+**Root causes:**
+1. No `vendor/` directory in the repo → binary requires network to build from scratch
+2. Hook used `exit 0` (fail-open) when binary was absent → silent policy bypass
+
+**Fix:**
+
+- **`vendor/`** — populated with `go mod vendor` and committed. All OPA and indirect
+  dependencies are now vendored. Any environment with Go installed can build the
+  binary with no network access: `go build -mod=vendor ./cmd/gov-lsp`.
+
+- **`.claude/hooks/policy-gate.sh`** — two changes:
+  1. Inline build now uses `go build -mod=vendor` when `vendor/` is present,
+     enabling network-free builds inside the hook itself.
+  2. When the binary cannot be found or built, the hook now **exits 1 with a clear
+     error message** (fail-closed) instead of silently exiting 0.
+
+**Verification:**
+```
+go build -mod=vendor ./...   OK
+go vet ./...                 OK
+go test ./...                OK (28 tests across 3 packages)
+hook: clean file             → exit 0
+hook: violating .md          → exit 1 + violation message
+hook: no binary, vendor/ present → inline build succeeds → exit 0
+hook: bash -n syntax check   OK
+```
+
+---
+
 ### 2026-03-02 — Session 5
 
 **Completed (5 backlog slices):**
