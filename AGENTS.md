@@ -208,7 +208,7 @@ MCP server configs are defined in:
 - `.mcp.json` — Claude Code and other agents
 
 Servers available: `gov-lsp` (policy tools), `fetch`, `sequential_thinking`,
-`time`, `memory`, `git`, `filesystem`, `brave_search`, `github`
+`time`, `memory`, `git`, `filesystem`, `brave_search`, `github`, `tavily`
 
 ### gov-lsp MCP Tools
 
