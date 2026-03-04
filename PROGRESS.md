@@ -1,6 +1,6 @@
 # Progress
 
-Last updated: 2026-03-02
+Last updated: 2026-03-04
 
 ---
 
@@ -23,6 +23,33 @@ Last updated: 2026-03-02
 ---
 
 ## Work Log
+
+### 2026-03-04 — Session 7 (Issues #4 and #6: close open issues)
+
+**Issue #4 (Hook error — fail-open):** Verified closed. The fix was merged in
+PR #8 (Session 6). `policy-gate.sh` now exits 1 with a clear error message when
+`gov-lsp` cannot be found or built (fail-closed). The complementary
+`session-start.sh` hook (SessionStart trigger) proactively builds the binary at
+the start of each Claude Code web session, so the PostToolUse gate always has a
+binary available. The `.gitignore` excludes `vendor/` with a comment directing
+contributors to `make vendor` for offline builds.
+
+**Issue #6 (Search api tool — Tavily MCP):** Verified closed. The commit
+referenced in the issue (`993a8d`) added Tavily MCP server configuration. Those
+changes are present in the repository: `@tavily/mcp` is registered in both
+`.mcp.json` (Claude Code) and `.github/mcp.json` (GitHub Copilot Agent) under
+the `TAVILY_API_KEY` environment variable, and `AGENTS.md` lists `tavily` in
+the MCP server table. No further code changes were required.
+
+**Verification:**
+```
+go build ./...          OK
+go vet ./...            OK
+go test ./...           OK  (3 packages, all pass)
+gov-lsp check .         15 violations (all markdown-naming in docs/ — intentional)
+```
+
+---
 
 ### 2026-03-02 — Session 6 (Issue #4: hook fail-open)
 
