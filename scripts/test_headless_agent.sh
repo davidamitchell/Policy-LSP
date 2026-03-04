@@ -171,7 +171,7 @@ pass "GH_TOKEN is set — copilot CLI headless agent ready"
 # ---- workspace isolation (always cleaned up) ---------------------------------
 
 WORKSPACE=$(mktemp -d)
-trap 'rm -rf "$WORKSPACE"' EXIT
+trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS"' EXIT
 
 echo "Workspace: $WORKSPACE"
 echo ""
