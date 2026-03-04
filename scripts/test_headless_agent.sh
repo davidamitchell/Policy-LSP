@@ -106,7 +106,11 @@ POLICIES_DIR="$(realpath "${GOV_LSP_POLICIES:-./policies}")"
 # invoked from any working directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_PATH="$SCRIPT_DIR/../.github/lsp-template.json"
-AGENT_LOGS="/tmp/agent_logs.txt"
+AGENT_LOGS="$(mktemp /tmp/agent_logs.XXXXXX)"
+# Export log path so the CI workflow can locate it for artifact upload.
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "agent_logs=$AGENT_LOGS" >> "$GITHUB_OUTPUT"
+fi
 
 PASS=0
 FAIL=0
@@ -167,7 +171,7 @@ pass "GH_TOKEN is set — copilot CLI headless agent ready"
 # ---- workspace isolation (always cleaned up) ---------------------------------
 
 WORKSPACE=$(mktemp -d)
-trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS"' EXIT
+trap 'rm -rf "$WORKSPACE"' EXIT
 
 echo "Workspace: $WORKSPACE"
 echo ""
@@ -180,6 +184,12 @@ echo ""
 # of the working directory the CLI uses internally.
 
 mkdir -p "$WORKSPACE/.github"
+# Guard against paths containing the sed delimiter. Pipes are technically valid
+# in Linux paths but would silently corrupt the JSON substitution.
+if [[ "$BINARY_PATH" == *'|'* ]] || [[ "$POLICIES_DIR" == *'|'* ]]; then
+  echo "ERROR: path contains '|' which breaks sed substitution" >&2
+  exit 1
+fi
 sed -e "s|GOV_LSP_BINARY|$BINARY_PATH|g" \
     -e "s|GOV_LSP_POLICIES|$POLICIES_DIR|g" \
     "$TEMPLATE_PATH" > "$WORKSPACE/.github/lsp.json"
