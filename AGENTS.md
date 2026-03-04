@@ -14,7 +14,9 @@ The policies bundled with this repo (`filenames.rego`, `content.rego`, etc.) are
 
 **The real goal:** Prove that a headless autonomous agent (e.g. GitHub Copilot via the `copilot` CLI) operating *without an IDE* can be given hard policy enforcement rails — exactly as an IDE gives human developers inline squiggles. GOV-LSP is the enforcement layer that fills that gap.
 
-An IDE-free agent has no LSP client, no inline feedback, and no natural guardrails. GOV-LSP's `check` subcommand and `policy-gate.sh` hook are what provide the rails. Every test, script, and integration in this repo should be understood in that context. The specific policy being enforced is secondary.
+An IDE-free agent has no LSP client, no inline feedback, and no natural guardrails. GOV-LSP's MCP tools (`gov_check_file`, `gov_check_workspace`) and `policy-gate.sh` hook are what provide the rails. Every test, script, and integration in this repo should be understood in that context. The specific policy being enforced is secondary.
+
+**What "enforcement works" means:** An agent given governance tools as part of its environment catches its own policy violations and self-corrects — before the violating file persists. The test for this is the outcome: the policy-violating file must not exist when the agent finishes. If it does exist, enforcement failed.
 
 The two core concerns of this repo are intentionally separate:
 
@@ -109,7 +111,7 @@ scripts/
 - Mock all filesystem access using `fs.FS` (`testing/fstest.MapFS`) — do not write to real directories in tests.
 - **Bug fixes must start with a failing test.** Confirm the failure before writing the fix.
 - The smoke test (`scripts/smoke_test.sh`) is an integration test; run it after building the binary.
-- **Headless-agent integration tests must require real prerequisites.** `scripts/test_headless_agent.sh` tests the full enforcement loop with an authenticated `copilot` CLI session. Do not bypass the authentication check or simulate the agent's action to make the test pass — a test that passes without the real environment tells you nothing about whether the framework works. If the test fails because `copilot` is not authenticated, that is the correct result for an unconfigured environment.
+- **Headless-agent integration tests prove the outcome, not the check.** `scripts/test_headless_agent.sh` tests the full enforcement loop with an authenticated `copilot` CLI session. The test gives the agent gov-lsp as an MCP enforcement tool (via `--additional-mcp-config`). Enforcement happens **inside the agent's session** — the agent calls the governance tools itself and self-corrects. The test script never calls `gov-lsp check` directly. The test asserts the outcome: the policy-violating file must NOT exist when the agent finishes. **If `notes.md` exists, enforcement failed — the test must fail.** Do not bypass the authentication check or simulate the agent's action to make the test pass — a test that passes without the real environment tells you nothing about whether the framework works. If the test fails because `copilot` is not authenticated, that is the correct result for an unconfigured environment.
 
 ### Logging
 
