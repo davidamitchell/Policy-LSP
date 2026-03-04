@@ -12,7 +12,7 @@ For AI coding agents (Claude Code, GitHub Copilot, etc.) working on this reposit
 
 The policies bundled with this repo (`filenames.rego`, `content.rego`, etc.) are **example policies only**. They demonstrate that the framework works, not what the framework is for.
 
-**The real goal:** Prove that a headless autonomous agent (e.g. GitHub Copilot via the `gh` CLI) operating *without an IDE* can be given hard policy enforcement rails — exactly as an IDE gives human developers inline squiggles. GOV-LSP is the enforcement layer that fills that gap.
+**The real goal:** Prove that a headless autonomous agent (e.g. GitHub Copilot via the `copilot` CLI) operating *without an IDE* can be given hard policy enforcement rails — exactly as an IDE gives human developers inline squiggles. GOV-LSP is the enforcement layer that fills that gap.
 
 An IDE-free agent has no LSP client, no inline feedback, and no natural guardrails. GOV-LSP's `check` subcommand and `policy-gate.sh` hook are what provide the rails. Every test, script, and integration in this repo should be understood in that context. The specific policy being enforced is secondary.
 
@@ -109,7 +109,7 @@ scripts/
 - Mock all filesystem access using `fs.FS` (`testing/fstest.MapFS`) — do not write to real directories in tests.
 - **Bug fixes must start with a failing test.** Confirm the failure before writing the fix.
 - The smoke test (`scripts/smoke_test.sh`) is an integration test; run it after building the binary.
-- **Headless-agent integration tests must require real prerequisites.** `scripts/test_headless_agent.sh` tests the full enforcement loop with an authenticated `gh` session. Do not bypass the `gh auth status` check or simulate the agent's action to make the test pass — a test that passes without the real environment tells you nothing about whether the framework works. If the test fails because `gh` is not authenticated, that is the correct result for an unconfigured environment.
+- **Headless-agent integration tests must require real prerequisites.** `scripts/test_headless_agent.sh` tests the full enforcement loop with an authenticated `copilot` CLI session. Do not bypass the authentication check or simulate the agent's action to make the test pass — a test that passes without the real environment tells you nothing about whether the framework works. If the test fails because `copilot` is not authenticated, that is the correct result for an unconfigured environment.
 
 ### Logging
 

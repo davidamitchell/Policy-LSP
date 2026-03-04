@@ -52,12 +52,12 @@ jobs:
 
       - name: Headless agent test
         # Exercises the full headless-agent enforcement loop:
-        #   authenticated gh agent → creates a policy-violating file → gov-lsp catches it
-        # Requires COPILOT_GITHUB_TOKEN secret (gh auth).  The test fails intentionally
+        #   authenticated copilot agent → creates a policy-violating file → gov-lsp catches it
+        # Requires COPILOT_GITHUB_TOKEN secret.  The test fails intentionally
         # in environments where that secret is absent — that is the correct result for
         # an unconfigured headless-agent environment.
         env:
-          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: |
           GOV_LSP_POLICIES=./policies bash scripts/test_headless_agent.sh /tmp/gov-lsp
         continue-on-error: true

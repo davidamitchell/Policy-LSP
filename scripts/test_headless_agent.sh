@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# test_headless_agent.sh — Headless-agent enforcement integration test.
+# test_headless_agent.sh — Headless Copilot CLI enforcement integration test.
 #
 # What this test proves
 # ---------------------
-# A headless agent (GitHub Copilot via the gh CLI) operates without an IDE,
-# without an LSP client, and without inline feedback.  GOV-LSP enforcement
-# is the only guardrail.  This test verifies the complete enforcement loop:
+# The GitHub Copilot CLI (the `copilot` binary) is a headless agent: it operates
+# without an IDE, without an LSP client, and without inline feedback.  GOV-LSP
+# enforcement is the only guardrail.  This test verifies the complete enforcement
+# loop:
 #
-#   authenticated gh agent → creates a policy-violating file → gov-lsp catches it
+#   authenticated copilot agent → creates a policy-violating file → gov-lsp catches it
 #
 # The filename policy (SCREAMING_SNAKE_CASE for .md files) is the example policy
 # used here.  The goal is not to test that specific policy — the goal is to prove
@@ -18,13 +19,23 @@
 # Prerequisites — this test FAILS if either is absent
 # ----------------------------------------------------
 #   gov-lsp   Build with: go build -o gov-lsp ./cmd/gov-lsp
-#   gh auth   Set GH_TOKEN, or run: gh auth login
-#             In CI: COPILOT_GITHUB_TOKEN repository secret exported as GH_TOKEN
+#   copilot   Install with: npm install -g @github/copilot
+#             Or: brew install copilot-cli
+#             Authenticate with: copilot login
+#             In CI: COPILOT_GITHUB_TOKEN repository secret
 #
-# Do NOT work around the gh auth requirement.  Bypassing it (e.g. by simulating
-# the agent's file-creation without gh) defeats the purpose of the test.  If the
-# test fails because gh is not authenticated, that is the correct and expected
-# result for an environment that has not been configured for headless-agent use.
+# Do NOT work around the copilot auth requirement.  Bypassing it (e.g. by
+# simulating the agent's file-creation directly in the shell) defeats the purpose
+# of the test.  If the test fails because copilot is not authenticated, that is
+# the correct and expected result for an unconfigured environment.
+#
+# Headless invocation
+# -------------------
+# The Copilot CLI supports programmatic/headless use via:
+#   -p PROMPT           execute a prompt and exit (no interactive session)
+#   --allow-all-tools   allow all tools automatically without confirmation
+#   --autopilot         enable autonomous continuation without prompting
+#   --add-dir PATH      grant the agent access to a directory
 #
 # Cleanup
 # -------
@@ -32,12 +43,14 @@
 #
 # Usage
 # -----
-#   GH_TOKEN=<token> bash scripts/test_headless_agent.sh [path-to-gov-lsp-binary]
+#   COPILOT_GITHUB_TOKEN=<token> bash scripts/test_headless_agent.sh [path-to-gov-lsp]
 #
 # Environment
 # -----------
-#   GH_TOKEN           GitHub token for the headless agent (required)
-#   GOV_LSP_POLICIES   directory containing .rego files (default: ./policies)
+#   COPILOT_GITHUB_TOKEN   auth token for the Copilot CLI (highest precedence)
+#   GH_TOKEN               auth token fallback
+#   GITHUB_TOKEN           auth token fallback
+#   GOV_LSP_POLICIES       directory containing .rego files (default: ./policies)
 
 set -uo pipefail
 
@@ -62,32 +75,42 @@ if [[ ! -d "$POLICIES_DIR" ]]; then
   exit 1
 fi
 
-# ---- preflight: gh authentication --------------------------------------------
-#
-# gh is the headless agent platform.  Without authentication the agent has no
-# identity and cannot represent a real headless-agent scenario.  The test fails
-# here — not skips — because an unauthenticated environment is an unconfigured
-# environment, not a passing one.
+# ---- preflight: Copilot CLI installation -------------------------------------
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "ERROR: gh CLI not installed — install from https://cli.github.com" >&2
+if ! command -v copilot >/dev/null 2>&1; then
+  echo "ERROR: copilot CLI not installed." >&2
+  echo "       Install with: npm install -g @github/copilot" >&2
+  echo "       Or: brew install copilot-cli" >&2
   exit 1
 fi
 
-echo "--- gh auth status ---"
-GH_AUTH_EXIT=0
-gh auth status 2>&1 || GH_AUTH_EXIT=$?
-echo "--- end gh auth status ---"
+echo "--- copilot version ---"
+copilot --version 2>&1
+echo "--- end copilot version ---"
 echo ""
 
-if [[ "$GH_AUTH_EXIT" -ne 0 ]]; then
-  echo "ERROR: gh is not authenticated." >&2
-  echo "       Set GH_TOKEN, or run: gh auth login" >&2
+# ---- preflight: Copilot CLI authentication -----------------------------------
+#
+# The Copilot CLI authenticates via COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN
+# environment variables, or via stored credentials from `copilot login`.
+#
+# The test fails here — not skips — because an unauthenticated environment is an
+# unconfigured environment, not a passing one.
+#
+# Token precedence (from copilot docs):
+#   COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN > stored credentials
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.copilot}"
+AUTH_TOKEN="${COPILOT_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+
+if [[ -z "$AUTH_TOKEN" ]] && [[ ! -d "$CONFIG_DIR" ]]; then
+  echo "ERROR: copilot CLI is not authenticated." >&2
+  echo "       Set COPILOT_GITHUB_TOKEN, or run: copilot login" >&2
   echo "       In CI: add COPILOT_GITHUB_TOKEN to repository secrets." >&2
   exit 1
 fi
 
-pass "gh is authenticated — headless agent platform ready"
+pass "copilot CLI authenticated — headless agent ready"
 
 # ---- workspace (always cleaned up) -------------------------------------------
 
@@ -97,27 +120,49 @@ trap 'rm -rf "$WORKSPACE"' EXIT
 echo "Workspace: $WORKSPACE"
 echo ""
 
-# ---- agent step: create a policy-violating file ------------------------------
+# ---- agent step: Copilot CLI creates a policy-violating file -----------------
 #
-# A headless Copilot agent asked to "create a notes file" will naturally produce
-# notes.md — a lowercase name that violates the SCREAMING_SNAKE_CASE policy.
-# The agent has no IDE, no LSP client, and no inline red squiggles to warn it.
+# The Copilot CLI is given a task to create a notes file.  Without governance
+# guardrails, it will naturally create notes.md — a lowercase name that violates
+# the SCREAMING_SNAKE_CASE policy.  The agent has no IDE, no LSP client, and no
+# inline red squiggles to warn it.
 #
-# gh copilot suggest requires a TTY and interactive confirmation, so the file is
-# created with the shell command Copilot would produce.  The authenticated gh
-# session established above is what makes this an agent-context action, not a
-# local simulation.
+# Flags used for headless operation:
+#   --allow-all-tools  allow all tools without confirmation (programmatic use;
+#                      equivalent to setting COPILOT_ALLOW_ALL=true)
+#   --autopilot        enable autonomous continuation without interactive prompts
+#   --add-dir          grant the agent access to the temp workspace
+#   -p                 execute a prompt and exit (non-interactive)
 
-AGENT_FILE="$WORKSPACE/notes.md"
-printf '# Notes\n' > "$AGENT_FILE"
-echo "Agent created: $AGENT_FILE"
+echo "=== Copilot CLI agent task ==="
+AGENT_EXIT=0
+(
+  cd "$WORKSPACE"
+  copilot \
+    --allow-all-tools \
+    --autopilot \
+    --add-dir "$WORKSPACE" \
+    -p "Create a markdown file called notes.md containing a single heading: # Notes" \
+    2>&1
+) || AGENT_EXIT=$?
+echo "=== end agent task (exit $AGENT_EXIT) ==="
+echo ""
+
+if [[ ! -f "$WORKSPACE/notes.md" ]]; then
+  echo "ERROR: copilot agent did not create notes.md" >&2
+  echo "       Check that copilot is authenticated and can access the workspace." >&2
+  exit 1
+fi
+
+pass "copilot agent created notes.md autonomously"
+echo "Agent created: $WORKSPACE/notes.md"
 echo ""
 
 # ---- enforcement: gov-lsp check ----------------------------------------------
 
 CHECK_OUTPUT=""
 CHECK_EXIT=0
-CHECK_OUTPUT=$(GOV_LSP_POLICIES="$POLICIES_DIR" "$BINARY" check "$AGENT_FILE" 2>&1) \
+CHECK_OUTPUT=$(GOV_LSP_POLICIES="$POLICIES_DIR" "$BINARY" check "$WORKSPACE/notes.md" 2>&1) \
   || CHECK_EXIT=$?
 
 echo "=== gov-lsp check output ==="
@@ -150,7 +195,7 @@ fi
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 echo ""
-echo "Framework proof: a headless gh agent's policy-violating action was caught"
-echo "by gov-lsp enforcement — the rails are working."
+echo "Framework proof: a headless Copilot CLI agent's policy-violating action"
+echo "was caught by gov-lsp enforcement — the rails are working."
 
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1
