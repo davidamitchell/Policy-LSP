@@ -50,6 +50,13 @@ jobs:
         run: |
           GOV_LSP_POLICIES=./policies bash scripts/test_policy_gate.sh /tmp/gov-lsp
 
+      - name: Headless agent test
+        # Simulates a headless gh copilot agent creating a lowercase .md file
+        # and verifies that gov-lsp check catches the SCREAMING_SNAKE_CASE
+        # violation.  The test workspace is always cleaned up by the EXIT trap.
+        run: |
+          GOV_LSP_POLICIES=./policies bash scripts/test_headless_agent.sh /tmp/gov-lsp
+
       - name: Policy check (self-governance)
         # Run gov-lsp check against the whole repo.
         # This job intentionally exits non-zero on docs/ violations (those are
