@@ -92,10 +92,22 @@
 
 set -uo pipefail
 
-BINARY="${1:-./gov-lsp}"
-BINARY="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
-POLICIES_DIR="${GOV_LSP_POLICIES:-./policies}"
-POLICIES_DIR="$(cd "$POLICIES_DIR" && pwd)"
+# ---- paths and environment ---------------------------------------------------
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <path-to-gov-lsp-binary>" >&2
+  echo "       Build with: go build -o gov-lsp ./cmd/gov-lsp" >&2
+  exit 1
+fi
+
+BINARY_PATH="$(realpath "$1")"
+POLICIES_DIR="$(realpath "${GOV_LSP_POLICIES:-./policies}")"
+# Resolve template path relative to the script's location so the script can be
+# invoked from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE_PATH="$SCRIPT_DIR/../.github/lsp-template.json"
+AGENT_LOGS="/tmp/agent_logs.txt"
+
 PASS=0
 FAIL=0
 
@@ -104,14 +116,19 @@ fail() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
 
 # ---- preflight: gov-lsp ------------------------------------------------------
 
-if [[ ! -x "$BINARY" ]]; then
-  echo "ERROR: gov-lsp binary not found or not executable: $BINARY" >&2
+if [[ ! -x "$BINARY_PATH" ]]; then
+  echo "ERROR: gov-lsp binary not found or not executable: $BINARY_PATH" >&2
   echo "       Build with: go build -o gov-lsp ./cmd/gov-lsp" >&2
   exit 1
 fi
 
 if [[ ! -d "$POLICIES_DIR" ]]; then
   echo "ERROR: policies directory not found: $POLICIES_DIR" >&2
+  exit 1
+fi
+
+if [[ ! -f "$TEMPLATE_PATH" ]]; then
+  echo "ERROR: LSP template not found: $TEMPLATE_PATH" >&2
   exit 1
 fi
 
@@ -147,49 +164,37 @@ fi
 
 pass "GH_TOKEN is set — copilot CLI headless agent ready"
 
-# ---- workspace (always cleaned up) -------------------------------------------
+# ---- workspace isolation (always cleaned up) ---------------------------------
 
 WORKSPACE=$(mktemp -d)
-trap 'rm -rf "$WORKSPACE"' EXIT
+trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS"' EXIT
 
 echo "Workspace: $WORKSPACE"
 echo ""
 
-# ---- LSP enforcement config --------------------------------------------------
+# ---- dynamic LSP config injection --------------------------------------------
 #
-# Register gov-lsp as the Language Server for this workspace using the lspServers
-# schema the Copilot CLI reads from .github/lsp.json.
-#
-# When the copilot agent creates or opens a .md file, the Copilot CLI sends a
-# textDocument/didOpen or textDocument/didChange event to gov-lsp.  gov-lsp
-# evaluates the file against the policies and responds with
-# textDocument/publishDiagnostics.  The agent receives the diagnostics inline —
-# exactly as an IDE would show red squiggles — and self-corrects.
-#
-# This is the native LSP integration path.  No explicit tool call required.
+# Replaces placeholders in the template with absolute paths and writes the
+# result into the isolated workspace.  The Copilot CLI reads .github/lsp.json
+# at startup; absolute paths ensure the binary and policies are found regardless
+# of the working directory the CLI uses internally.
 
 mkdir -p "$WORKSPACE/.github"
-cat > "$WORKSPACE/.github/lsp.json" << EOF
-{
-  "lspServers": {
-    "gov-lsp": {
-      "command": "$BINARY",
-      "args": ["-policies", "$POLICIES_DIR"],
-      "fileExtensions": {
-        ".md": "markdown",
-        ".go": "go",
-        ".sh": "shellscript",
-        ".rego": "rego"
-      }
-    }
-  }
-}
-EOF
+sed -e "s|GOV_LSP_BINARY|$BINARY_PATH|g" \
+    -e "s|GOV_LSP_POLICIES|$POLICIES_DIR|g" \
+    "$TEMPLATE_PATH" > "$WORKSPACE/.github/lsp.json"
 
 echo "--- workspace LSP config ---"
 cat "$WORKSPACE/.github/lsp.json"
 echo "--- end LSP config ---"
 echo ""
+
+# ---- workspace trust ---------------------------------------------------------
+#
+# Explicitly trust the workspace so the Copilot CLI loads the local lsp.json
+# without a security prompt — a common silent failure point in headless CI.
+
+copilot --trust "$WORKSPACE"
 
 # ---- agent task: create a notes file with governance LSP active --------------
 #
@@ -201,14 +206,10 @@ echo ""
 # The enforcement happens through the native LSP protocol — not from a check run
 # externally by this script.
 #
-# Invocation pattern (from the Research repo research-loop.yml):
-#   copilot -p "PROMPT" --autopilot --allow-all
-#
-# --allow-all    = --allow-all-tools --allow-all-paths --allow-all-urls
-# --autopilot    = autonomous continuation without interactive prompts
-# -p             = execute a prompt and exit (non-interactive)
+# --debug captures LSP JSON-RPC traffic and agent reasoning for post-mortem
+# analysis when the test fails.
 
-echo "=== Copilot CLI agent task (with gov-lsp as native Language Server) ==="
+echo "=== Copilot CLI agent task (with gov-lsp as native Language Server, debug enabled) ==="
 AGENT_EXIT=0
 (
   cd "$WORKSPACE"
@@ -216,7 +217,7 @@ AGENT_EXIT=0
     -p "Create a markdown notes file in the current directory containing a single heading: # Notes. Follow all project policies and fix any violations before you finish." \
     --autopilot \
     --allow-all \
-    2>&1
+    --debug > "$AGENT_LOGS" 2>&1
 ) || AGENT_EXIT=$?
 echo "=== end agent task (exit $AGENT_EXIT) ==="
 echo ""
@@ -236,10 +237,19 @@ ls -la "$WORKSPACE/" 2>&1
 echo "--- end workspace contents ---"
 echo ""
 
-if [[ -f "$WORKSPACE/notes.md" ]]; then
-  fail "enforcement FAILED: agent created notes.md (policy-violating file exists)"
-  echo "     The governance LSP did not prevent the violation." >&2
-  echo "     The agent had gov-lsp registered as Language Server but the violation was not caught." >&2
+if [[ $AGENT_EXIT -ne 0 ]] || [[ -f "$WORKSPACE/notes.md" ]]; then
+  echo "--- AGENT DEBUG LOGS ---"
+  cat "$AGENT_LOGS"
+  echo "--- END DEBUG LOGS ---"
+  echo ""
+
+  if [[ $AGENT_EXIT -ne 0 ]]; then
+    fail "agent process exited with error $AGENT_EXIT"
+  fi
+  if [[ -f "$WORKSPACE/notes.md" ]]; then
+    fail "enforcement FAILED: agent created notes.md (policy-violating file exists)"
+    echo "     The governance LSP did not prevent the violation." >&2
+  fi
 else
   pass "enforcement PASSED: notes.md was not created (agent self-corrected via LSP diagnostics)"
 fi
