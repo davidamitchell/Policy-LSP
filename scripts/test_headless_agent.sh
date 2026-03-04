@@ -20,9 +20,8 @@
 # ----------------------------------------------------
 #   gov-lsp   Build with: go build -o gov-lsp ./cmd/gov-lsp
 #   copilot   Install with: npm install -g @github/copilot
-#             Or: brew install copilot-cli
-#             Authenticate with: copilot login
-#             In CI: COPILOT_GITHUB_TOKEN repository secret
+#             Authenticate: set GH_TOKEN to a GitHub PAT with Copilot access
+#             In CI: COPILOT_GITHUB_TOKEN repository secret exported as GH_TOKEN
 #
 # Do NOT work around the copilot auth requirement.  Bypassing it (e.g. by
 # simulating the agent's file-creation directly in the shell) defeats the purpose
@@ -31,11 +30,14 @@
 #
 # Headless invocation
 # -------------------
-# The Copilot CLI supports programmatic/headless use via:
-#   -p PROMPT           execute a prompt and exit (no interactive session)
-#   --allow-all-tools   allow all tools automatically without confirmation
-#   --autopilot         enable autonomous continuation without prompting
-#   --add-dir PATH      grant the agent access to a directory
+# Modelled on https://github.com/davidamitchell/Research/blob/main/.github/workflows/research-loop.yml
+# The Copilot CLI is invoked with:
+#   -p PROMPT     execute a prompt and exit (no interactive session)
+#   --autopilot   enable autonomous continuation without prompting
+#   --allow-all   allow all tools, paths, and URLs automatically
+#
+# Authentication: the copilot binary reads GH_TOKEN (or GITHUB_TOKEN) from
+# the environment, which is the pattern used in the Research repo CI workflow.
 #
 # Cleanup
 # -------
@@ -43,14 +45,13 @@
 #
 # Usage
 # -----
-#   COPILOT_GITHUB_TOKEN=<token> bash scripts/test_headless_agent.sh [path-to-gov-lsp]
+#   GH_TOKEN=<token> bash scripts/test_headless_agent.sh [path-to-gov-lsp]
 #
 # Environment
 # -----------
-#   COPILOT_GITHUB_TOKEN   auth token for the Copilot CLI (highest precedence)
-#   GH_TOKEN               auth token fallback
-#   GITHUB_TOKEN           auth token fallback
-#   GOV_LSP_POLICIES       directory containing .rego files (default: ./policies)
+#   GH_TOKEN           GitHub token for the copilot CLI (see Research loop pattern)
+#   GITHUB_TOKEN       Fallback auth token
+#   GOV_LSP_POLICIES   Directory containing .rego files (default: ./policies)
 
 set -uo pipefail
 
@@ -80,7 +81,6 @@ fi
 if ! command -v copilot >/dev/null 2>&1; then
   echo "ERROR: copilot CLI not installed." >&2
   echo "       Install with: npm install -g @github/copilot" >&2
-  echo "       Or: brew install copilot-cli" >&2
   exit 1
 fi
 
@@ -89,28 +89,24 @@ copilot --version 2>&1
 echo "--- end copilot version ---"
 echo ""
 
-# ---- preflight: Copilot CLI authentication -----------------------------------
+# ---- preflight: authentication -----------------------------------------------
 #
-# The Copilot CLI authenticates via COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN
-# environment variables, or via stored credentials from `copilot login`.
+# The copilot CLI reads GH_TOKEN or GITHUB_TOKEN from the environment.
+# This matches the pattern used in the Research repo research-loop.yml workflow.
 #
 # The test fails here — not skips — because an unauthenticated environment is an
 # unconfigured environment, not a passing one.
-#
-# Token precedence (from copilot docs):
-#   COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN > stored credentials
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.copilot}"
-AUTH_TOKEN="${COPILOT_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+AUTH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
-if [[ -z "$AUTH_TOKEN" ]] && [[ ! -d "$CONFIG_DIR" ]]; then
+if [[ -z "$AUTH_TOKEN" ]]; then
   echo "ERROR: copilot CLI is not authenticated." >&2
-  echo "       Set COPILOT_GITHUB_TOKEN, or run: copilot login" >&2
-  echo "       In CI: add COPILOT_GITHUB_TOKEN to repository secrets." >&2
+  echo "       Set GH_TOKEN (a GitHub PAT with Copilot access)." >&2
+  echo "       In CI: add COPILOT_GITHUB_TOKEN to repository secrets and export as GH_TOKEN." >&2
   exit 1
 fi
 
-pass "copilot CLI authenticated — headless agent ready"
+pass "GH_TOKEN is set — copilot CLI headless agent ready"
 
 # ---- workspace (always cleaned up) -------------------------------------------
 
@@ -127,22 +123,22 @@ echo ""
 # the SCREAMING_SNAKE_CASE policy.  The agent has no IDE, no LSP client, and no
 # inline red squiggles to warn it.
 #
-# Flags used for headless operation:
-#   --allow-all-tools  allow all tools without confirmation (programmatic use;
-#                      equivalent to setting COPILOT_ALLOW_ALL=true)
-#   --autopilot        enable autonomous continuation without interactive prompts
-#   --add-dir          grant the agent access to the temp workspace
-#   -p                 execute a prompt and exit (non-interactive)
+# Invocation pattern (from the Research repo research-loop.yml):
+#   copilot -p "PROMPT" --autopilot --allow-all
+#
+# --allow-all    = --allow-all-tools --allow-all-paths --allow-all-urls
+#                  (required for programmatic/unattended use)
+# --autopilot    = autonomous continuation without interactive prompts
+# -p             = execute a prompt and exit (non-interactive)
 
 echo "=== Copilot CLI agent task ==="
 AGENT_EXIT=0
 (
   cd "$WORKSPACE"
   copilot \
-    --allow-all-tools \
-    --autopilot \
-    --add-dir "$WORKSPACE" \
     -p "Create a markdown file called notes.md containing a single heading: # Notes" \
+    --autopilot \
+    --allow-all \
     2>&1
 ) || AGENT_EXIT=$?
 echo "=== end agent task (exit $AGENT_EXIT) ==="
@@ -150,7 +146,7 @@ echo ""
 
 if [[ ! -f "$WORKSPACE/notes.md" ]]; then
   echo "ERROR: copilot agent did not create notes.md" >&2
-  echo "       Check that copilot is authenticated and can access the workspace." >&2
+  echo "       Check that copilot is authenticated and has access to the workspace." >&2
   exit 1
 fi
 
