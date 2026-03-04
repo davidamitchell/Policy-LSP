@@ -10,22 +10,28 @@
 # This test proves the FRAMEWORK works by proving the OUTCOME:
 #
 #   The agent is given a task that would naturally produce a policy-violating
-#   file (notes.md = lowercase, violates SCREAMING_SNAKE_CASE).  The agent also
-#   has access to the gov-lsp governance MCP tools.  After running, the
-#   policy-violating file must NOT exist — because the agent caught the violation
-#   through the enforcement tools and self-corrected before completing.
+#   file (notes.md = lowercase, violates SCREAMING_SNAKE_CASE).  The agent runs
+#   inside a workspace where gov-lsp is registered as its Language Server via
+#   .github/lsp.json.  After running, the policy-violating file must NOT exist —
+#   because the agent caught the violation through the LSP diagnostics and
+#   self-corrected before completing.
 #
 #   IF notes.md EXISTS AT THE END = ENFORCEMENT FAILED = TEST FAILS.
 #
 # The enforcement does NOT happen in this test script.  It happens inside the
-# agent's own workflow, via the gov-lsp MCP tools the agent has available.  This
-# is the difference between testing enforcement-as-a-post-check (wrong) and
-# testing enforcement-as-a-guardrail (correct).
+# agent's own session, via the gov-lsp Language Server registered in the
+# workspace's .github/lsp.json.  When the agent creates or opens a file, gov-lsp
+# sends textDocument/publishDiagnostics events to the Copilot CLI, exactly as
+# an IDE would display inline squiggles — the agent receives them and self-corrects.
+#
+# This is the native, highest-fidelity integration path: the Copilot CLI reads
+# .github/lsp.json at startup and connects to declared LSP servers.  No external
+# check command, no MCP workaround — just the LSP protocol doing its job.
 #
 # The filename policy (SCREAMING_SNAKE_CASE for .md files) is an example policy.
 # The goal is not to test that specific rule — the goal is to prove the framework
-# pattern: give any headless agent governance tools, and violations get caught
-# before the agent's work lands.
+# pattern: give any headless agent a governance Language Server, and violations
+# get caught before the agent's work lands.
 #
 # Prerequisites — this test FAILS if either is absent
 # ----------------------------------------------------
@@ -43,10 +49,29 @@
 # -------------------
 # Modelled on https://github.com/davidamitchell/Research/blob/main/.github/workflows/research-loop.yml
 # The Copilot CLI is invoked with:
-#   -p PROMPT                    execute a prompt and exit (no interactive session)
-#   --autopilot                  enable autonomous continuation without prompting
-#   --allow-all                  allow all tools, paths, and URLs automatically
-#   --additional-mcp-config @f   augment the session with extra MCP servers
+#   -p PROMPT     execute a prompt and exit (no interactive session)
+#   --autopilot   enable autonomous continuation without prompting
+#   --allow-all   allow all tools, paths, and URLs automatically
+#
+# LSP enforcement
+# ---------------
+# gov-lsp is registered as a Language Server in the workspace's .github/lsp.json
+# using the lspServers schema the Copilot CLI reads at startup:
+#
+#   {
+#     "lspServers": {
+#       "gov-lsp": {
+#         "command": "<absolute-path-to-binary>",
+#         "args": ["-policies", "<absolute-path-to-policies>"],
+#         "fileExtensions": { ".md": "markdown", ... }
+#       }
+#     }
+#   }
+#
+# The Copilot CLI connects to gov-lsp via the LSP stdio protocol.  When the agent
+# creates or edits a file, gov-lsp evaluates it and pushes diagnostics back through
+# textDocument/publishDiagnostics.  The agent sees the violations inline — no
+# explicit tool call required — and self-corrects.
 #
 # Authentication: the copilot binary reads GH_TOKEN (or GITHUB_TOKEN) from
 # the environment, which is the pattern used in the Research repo CI workflow.
@@ -125,55 +150,72 @@ pass "GH_TOKEN is set — copilot CLI headless agent ready"
 # ---- workspace (always cleaned up) -------------------------------------------
 
 WORKSPACE=$(mktemp -d)
-MCP_CONFIG=$(mktemp --suffix=.json)
-trap 'rm -rf "$WORKSPACE" "$MCP_CONFIG"' EXIT
+trap 'rm -rf "$WORKSPACE"' EXIT
 
 echo "Workspace: $WORKSPACE"
 echo ""
 
-# ---- enforcement MCP config --------------------------------------------------
+# ---- LSP enforcement config --------------------------------------------------
 #
-# Register the gov-lsp MCP server so the copilot agent has governance tools
-# available during its task.  The agent can call gov_check_file or
-# gov_check_workspace as part of its natural workflow.  Enforcement happens
-# INSIDE the agent's session — not in this test script.
+# Register gov-lsp as the Language Server for this workspace using the lspServers
+# schema the Copilot CLI reads from .github/lsp.json.
+#
+# When the copilot agent creates or opens a .md file, the Copilot CLI sends a
+# textDocument/didOpen or textDocument/didChange event to gov-lsp.  gov-lsp
+# evaluates the file against the policies and responds with
+# textDocument/publishDiagnostics.  The agent receives the diagnostics inline —
+# exactly as an IDE would show red squiggles — and self-corrects.
+#
+# This is the native LSP integration path.  No explicit tool call required.
 
-cat > "$MCP_CONFIG" << EOF
+mkdir -p "$WORKSPACE/.github"
+cat > "$WORKSPACE/.github/lsp.json" << EOF
 {
-  "mcpServers": {
+  "lspServers": {
     "gov-lsp": {
       "command": "$BINARY",
-      "args": ["mcp", "-policies", "$POLICIES_DIR"]
+      "args": ["-policies", "$POLICIES_DIR"],
+      "fileExtensions": {
+        ".md": "markdown",
+        ".go": "go",
+        ".sh": "shellscript",
+        ".rego": "rego"
+      }
     }
   }
 }
 EOF
 
-# ---- agent task: create a notes file with governance enforcement active ------
+echo "--- workspace LSP config ---"
+cat "$WORKSPACE/.github/lsp.json"
+echo "--- end LSP config ---"
+echo ""
+
+# ---- agent task: create a notes file with governance LSP active --------------
 #
 # The agent is asked to create a notes file.  Left to its own devices it will
 # use a lowercase name (notes.md) which violates the SCREAMING_SNAKE_CASE policy.
-# But it also has the gov-lsp governance MCP tools available and is instructed to
-# comply with project policies.  The enforcement happens through the agent's own
-# use of those tools — not from a check run externally by this script.
+# But it runs inside a workspace where gov-lsp is registered as the Language
+# Server.  The Copilot CLI connects to gov-lsp at startup; when the agent creates
+# notes.md, gov-lsp pushes the markdown-naming-violation diagnostic inline.
+# The enforcement happens through the native LSP protocol — not from a check run
+# externally by this script.
 #
 # Invocation pattern (from the Research repo research-loop.yml):
 #   copilot -p "PROMPT" --autopilot --allow-all
 #
-# --allow-all                  = --allow-all-tools --allow-all-paths --allow-all-urls
-# --autopilot                  = autonomous continuation without interactive prompts
-# -p                           = execute a prompt and exit (non-interactive)
-# --additional-mcp-config @f   = augment MCP tools with gov-lsp enforcement
+# --allow-all    = --allow-all-tools --allow-all-paths --allow-all-urls
+# --autopilot    = autonomous continuation without interactive prompts
+# -p             = execute a prompt and exit (non-interactive)
 
-echo "=== Copilot CLI agent task (with gov-lsp enforcement tools) ==="
+echo "=== Copilot CLI agent task (with gov-lsp as native Language Server) ==="
 AGENT_EXIT=0
 (
   cd "$WORKSPACE"
   copilot \
-    -p "Create a markdown notes file in the current directory containing a single heading: # Notes. You have governance policy tools available — use them to check any file you create for policy compliance and fix any violations before you are done." \
+    -p "Create a markdown notes file in the current directory containing a single heading: # Notes. Follow all project policies and fix any violations before you finish." \
     --autopilot \
     --allow-all \
-    --additional-mcp-config "@$MCP_CONFIG" \
     2>&1
 ) || AGENT_EXIT=$?
 echo "=== end agent task (exit $AGENT_EXIT) ==="
@@ -184,11 +226,10 @@ echo ""
 # The only assertion that matters: did the agent leave a policy-violating file?
 #
 # notes.md EXISTS   → enforcement failed — the agent created a violating file
-#                     and the governance framework did not catch it.  FAIL.
+#                     and the governance LSP did not catch it.  FAIL.
 #
-# notes.md ABSENT   → enforcement worked — the agent either self-corrected
-#                     before creating the file, or renamed it after catching
-#                     the violation through the gov-lsp tools.  PASS.
+# notes.md ABSENT   → enforcement worked — the agent received LSP diagnostics
+#                     and self-corrected before completing.  PASS.
 
 echo "--- workspace contents ---"
 ls -la "$WORKSPACE/" 2>&1
@@ -197,10 +238,10 @@ echo ""
 
 if [[ -f "$WORKSPACE/notes.md" ]]; then
   fail "enforcement FAILED: agent created notes.md (policy-violating file exists)"
-  echo "     The governance framework did not prevent the violation." >&2
-  echo "     The agent had gov-lsp tools available but the violation was not caught." >&2
+  echo "     The governance LSP did not prevent the violation." >&2
+  echo "     The agent had gov-lsp registered as Language Server but the violation was not caught." >&2
 else
-  pass "enforcement PASSED: notes.md was not created (agent self-corrected via governance tools)"
+  pass "enforcement PASSED: notes.md was not created (agent self-corrected via LSP diagnostics)"
 fi
 
 if [[ -f "$WORKSPACE/NOTES.md" ]]; then
@@ -216,9 +257,9 @@ echo "Results: $PASS passed, $FAIL failed"
 echo ""
 if [[ "$FAIL" -eq 0 ]]; then
   echo "Framework proof: a headless Copilot CLI agent operating with gov-lsp"
-  echo "enforcement tools self-corrected a policy violation — the rails are working."
+  echo "as its native Language Server self-corrected a policy violation — the rails are working."
 else
-  echo "Framework BROKEN: the governance enforcement framework did not prevent"
+  echo "Framework BROKEN: the governance LSP framework did not prevent"
   echo "a policy-violating file from being created by the headless agent."
 fi
 
