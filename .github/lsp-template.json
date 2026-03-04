@@ -1,0 +1,14 @@
+{
+  "lspServers": {
+    "gov-lsp": {
+      "command": "GOV_LSP_BINARY",
+      "args": ["-policies", "GOV_LSP_POLICIES"],
+      "fileExtensions": {
+        ".md": "markdown",
+        ".go": "go",
+        ".sh": "shellscript",
+        ".rego": "rego"
+      }
+    }
+  }
+}
