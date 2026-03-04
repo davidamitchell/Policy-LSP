@@ -50,6 +50,24 @@ jobs:
         run: |
           GOV_LSP_POLICIES=./policies bash scripts/test_policy_gate.sh /tmp/gov-lsp
 
+      - name: Install GitHub Copilot CLI
+        # Required for the headless agent test.
+        # Pattern from https://github.com/davidamitchell/Research/blob/main/.github/workflows/research-loop.yml
+        run: npm install -g @github/copilot
+
+      - name: Headless agent test
+        # Exercises the full headless-agent enforcement loop:
+        #   authenticated copilot agent → creates a policy-violating file → gov-lsp catches it
+        # Invocation pattern matches https://github.com/davidamitchell/Research/blob/main/.github/workflows/research-loop.yml
+        # Requires COPILOT_GITHUB_TOKEN secret exported as GH_TOKEN.  The test fails
+        # intentionally in environments where that secret is absent — that is the correct
+        # result for an unconfigured headless-agent environment.
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          GOV_LSP_POLICIES=./policies bash scripts/test_headless_agent.sh /tmp/gov-lsp
+        continue-on-error: true
+
       - name: Policy check (self-governance)
         # Run gov-lsp check against the whole repo.
         # This job intentionally exits non-zero on docs/ violations (those are

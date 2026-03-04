@@ -1,20 +1,14 @@
 {
-  "version": 1,
-  "languageServers": [
-    {
-      "name": "gov-lsp",
-      "command": ["bash", "scripts/lsp-start.sh"],
-      "env": {
-        "GOV_LSP_POLICIES": "./policies"
-      },
-      "documentSelector": [{ "pattern": "**/*" }],
-      "rootMarkers": [".git", "go.mod"],
-      "description": "GOV-LSP governance language server. Publishes textDocument/publishDiagnostics on every file open/change. Violations appear as errors with optional fix metadata in Diagnostic.data.",
-      "capabilities": {
-        "textDocumentSync": 2,
-        "diagnosticsProvider": true,
-        "codeActionProvider": false
+  "lspServers": {
+    "gov-lsp": {
+      "command": "bash",
+      "args": ["scripts/lsp-start.sh"],
+      "fileExtensions": {
+        ".md": "markdown",
+        ".go": "go",
+        ".sh": "shellscript",
+        ".rego": "rego"
       }
     }
-  ]
+  }
 }

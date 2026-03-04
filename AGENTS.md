@@ -8,6 +8,16 @@ For AI coding agents (Claude Code, GitHub Copilot, etc.) working on this reposit
 
 **GOV-LSP** is a portable, Go-based Secondary Language Server (LSP) that acts as a "Policy Sidecar" for any workspace. It evaluates files against a library of [Open Policy Agent](https://www.openpolicyagent.org/) (OPA) Rego rules and surfaces violations as real-time LSP Diagnostics with automated CodeAction fixes.
 
+### True Goal — Read This First
+
+The policies bundled with this repo (`filenames.rego`, `content.rego`, etc.) are **example policies only**. They demonstrate that the framework works, not what the framework is for.
+
+**The real goal:** Prove that a headless autonomous agent (e.g. GitHub Copilot via the `copilot` CLI) operating *without an IDE* can be given hard policy enforcement rails — exactly as an IDE gives human developers inline squiggles. GOV-LSP is the enforcement layer that fills that gap.
+
+An IDE-free agent has no LSP client, no inline feedback, and no natural guardrails. GOV-LSP's MCP tools (`gov_check_file`, `gov_check_workspace`) and `policy-gate.sh` hook are what provide the rails. Every test, script, and integration in this repo should be understood in that context. The specific policy being enforced is secondary.
+
+**What "enforcement works" means:** An agent given governance tools as part of its environment catches its own policy violations and self-corrects — before the violating file persists. The test for this is the outcome: the policy-violating file must not exist when the agent finishes. If it does exist, enforcement failed.
+
 The two core concerns of this repo are intentionally separate:
 
 1. **Server** — `cmd/gov-lsp/` and `internal/` contain the Go LSP implementation. This is a protocol-correct, stdio-based JSON-RPC server with a clean transport/engine boundary.
@@ -101,6 +111,7 @@ scripts/
 - Mock all filesystem access using `fs.FS` (`testing/fstest.MapFS`) — do not write to real directories in tests.
 - **Bug fixes must start with a failing test.** Confirm the failure before writing the fix.
 - The smoke test (`scripts/smoke_test.sh`) is an integration test; run it after building the binary.
+- **Headless-agent integration tests prove the outcome, not the check.** `scripts/test_headless_agent.sh` tests the full enforcement loop with an authenticated `copilot` CLI session. The test creates a workspace with gov-lsp registered as its Language Server in `.github/lsp.json` (the `lspServers` schema the Copilot CLI reads at startup). Enforcement happens **inside the agent's session** — the Copilot CLI connects to gov-lsp via the LSP protocol and the agent receives inline diagnostics automatically when it opens or edits files. The test script never calls `gov-lsp check` directly. The test asserts the outcome: the policy-violating file must NOT exist when the agent finishes. **If `notes.md` exists, enforcement failed — the test must fail.** Do not bypass the authentication check or simulate the agent's action to make the test pass — a test that passes without the real environment tells you nothing about whether the framework works. If the test fails because `copilot` is not authenticated, that is the correct result for an unconfigured environment.
 
 ### Logging
 
@@ -156,14 +167,28 @@ PROGRESS.md                # Session history
 This repository is self-governing. The same `gov-lsp` tool it ships runs against
 its own source on every file write.
 
-### Native LSP Client (Claude Code + GitHub Copilot Agent)
+### Native LSP Client (Claude Code + GitHub Copilot CLI)
 
 `.claude/lsp.json` registers `gov-lsp` as a Language Server for Claude Code.
-`.github/lsp.json` does the same for GitHub Copilot Agent. The agent starts the server
-via `scripts/lsp-start.sh` (which auto-builds the binary if absent), then sends
-`textDocument/didOpen` and `textDocument/didChange` events for every file it views or
-modifies. The server streams `textDocument/publishDiagnostics` notifications back —
-the same signal path that puts red squiggles in an IDE, delivered directly into the
+`.github/lsp.json` does the same for the GitHub Copilot CLI using the `lspServers`
+schema the CLI reads at startup:
+
+```json
+{
+  "lspServers": {
+    "gov-lsp": {
+      "command": "bash",
+      "args": ["scripts/lsp-start.sh"],
+      "fileExtensions": { ".md": "markdown", ".go": "go", ".rego": "rego" }
+    }
+  }
+}
+```
+
+The CLI connects to the declared LSP server via stdio at session start. When the agent
+creates or edits a file, the Copilot CLI sends `textDocument/didOpen` and
+`textDocument/didChange` events; gov-lsp responds with `textDocument/publishDiagnostics`
+— the same signal path that puts red squiggles in an IDE, delivered directly into the
 agent's context. Violations are `Diagnostic` objects with exact line/column positions,
 severity, and `data.fix` containing the suggested correction.
 
