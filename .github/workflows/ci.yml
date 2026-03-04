@@ -62,11 +62,24 @@ jobs:
         # Requires COPILOT_GITHUB_TOKEN secret exported as GH_TOKEN.  The test fails
         # intentionally in environments where that secret is absent — that is the correct
         # result for an unconfigured headless-agent environment.
+        id: agent-test
         env:
           GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GOV_LSP_POLICIES: ./policies
         run: |
-          GOV_LSP_POLICIES=./policies bash scripts/test_headless_agent.sh /tmp/gov-lsp
+          bash scripts/test_headless_agent.sh /tmp/gov-lsp
         continue-on-error: true
+
+      - name: Upload agent debug logs
+        # Always upload logs so LSP JSON-RPC traffic and agent reasoning are
+        # available for post-mortem analysis regardless of test outcome.
+        # Path comes from the step output to support parallel runs using mktemp.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-agent-debug-logs
+          path: ${{ steps.agent-test.outputs.agent_logs }}
+          if-no-files-found: ignore
 
       - name: Policy check (self-governance)
         # Run gov-lsp check against the whole repo.
