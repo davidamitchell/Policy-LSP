@@ -166,31 +166,29 @@ func TestRunCheck_JSONFormat_ValidJSON(t *testing.T) {
 	}
 }
 
-func TestRunCheck_SelfGovernance_DetectsRepoViolations(t *testing.T) {
-	// This test documents the self-governance property: the repo's own docs/
-	// directory contains lowercase .md files that violate the SCREAMING_SNAKE_CASE
-	// policy. Running gov-lsp check on docs/ should find violations.
-	repoRoot, err := filepath.Abs("../../")
-	if err != nil {
-		t.Fatalf("resolving repo root: %v", err)
-	}
-	docsDir := filepath.Join(repoRoot, "docs")
-	if _, err := os.Stat(docsDir); err != nil {
-		t.Skipf("docs/ directory not found at %s", docsDir)
-	}
+func TestRunCheck_FilenamePolicy_DetectsViolations(t *testing.T) {
+	// Hermetic falsifiability test: a known set of violating and compliant files
+	// is written to a temp dir. The test fails if the engine returns a count
+	// other than the exact number of violating files supplied.
+	dir := t.TempDir()
+	// Three files that must trigger a violation.
+	writeFile(t, dir, "getting-started.md", "# getting started")
+	writeFile(t, dir, "policies.md", "# policies")
+	writeFile(t, dir, "integrations.md", "# integrations")
+	// Two files that must NOT trigger a violation.
+	writeFile(t, dir, "README.md", "# readme")
+	writeFile(t, dir, "CHANGELOG.md", "# changelog")
+
+	const wantViolations = 3
 
 	eng := policyEngine(t)
 	var buf bytes.Buffer
-	count, err := runCheck(eng, []string{docsDir}, "text", &buf)
+	count, err := runCheck(eng, []string{dir}, "text", &buf)
 	if err != nil {
 		t.Fatalf("runCheck: %v", err)
 	}
-	// The repo intentionally ships docs with lowercase names to demonstrate
-	// that the policy catches real violations. If someone has renamed the files
-	// to be compliant, that is also correct — the policy is working either way.
-	t.Logf("self-governance check: %d violation(s) in docs/\n%s", count, buf.String())
-	if !strings.Contains(buf.String(), "Checked") {
-		t.Error("expected summary line in output")
+	if count != wantViolations {
+		t.Errorf("violation count = %d, want %d\nOutput:\n%s", count, wantViolations, buf.String())
 	}
 }
 
