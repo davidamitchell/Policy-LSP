@@ -22,7 +22,7 @@ help:
 	@echo "  vendor         download and vendor all dependencies (run once with network)"
 	@echo ""
 	@echo "Quality:"
-	@echo "  test           run all unit tests (go test ./...)"
+	@echo "  test           run all unit tests (go test -v ./...)"
 	@echo "  vet            run go vet ./..."
 	@echo "  smoke          build + run the end-to-end smoke test"
 	@echo "  test-hook      build + test the policy-gate.sh hook behaviour"
@@ -47,7 +47,7 @@ build:
 
 ## test: run the full Go test suite
 test:
-	go test $(GOFLAGS) ./... -count=1
+	go test $(GOFLAGS) -v ./... -count=1
 
 ## vet: run go vet
 vet:
