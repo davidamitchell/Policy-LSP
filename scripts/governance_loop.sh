@@ -236,12 +236,41 @@ wait_for_changes() {
   fi
 }
 
-# ---- governance loop ---------------------------------------------------------
+# ---- phase 1: initial agent run (task execution) -----------------------------
+#
+# The agent is given the original task and runs unconditionally.  This is the
+# "do the work" phase.  Violations produced here are caught and corrected in
+# the convergence loop below.
+
+echo "=== Initial agent run ==="
+AGENT_LOG=$(mktemp /tmp/governance_agent_initial.XXXXXX)
+INITIAL_EXIT=0
+(
+  cd "$WORKSPACE"
+  copilot \
+    -p "$AGENT_TASK" \
+    --autopilot \
+    --allow-all
+) >"$AGENT_LOG" 2>&1 || INITIAL_EXIT=$?
+
+if [[ $INITIAL_EXIT -ne 0 ]]; then
+  echo "WARNING: initial agent run exited $INITIAL_EXIT — see $AGENT_LOG for details"
+fi
+
+echo "Waiting for workspace to settle..."
+wait_for_changes "$WORKSPACE"
+echo ""
+
+# ---- phase 2: convergence loop (violation correction) -----------------------
+#
+# Now evaluate the workspace.  If the initial run left violations, inject the
+# structured diagnostic context into subsequent agent prompts and retry until
+# the workspace is clean or MAX_ITER correction rounds are exhausted.
 
 iteration=0
 
 while [[ $iteration -lt $MAX_ITER ]]; do
-  echo "=== Iteration $iteration ==="
+  echo "=== Correction iteration $iteration ==="
 
   # Step 1: structured workspace evaluation (JSON, not log-grepping).
   VIOLATION_COUNT=$(check_workspace "$WORKSPACE")
@@ -249,7 +278,7 @@ while [[ $iteration -lt $MAX_ITER ]]; do
 
   # Step 2: convergence check — exit when the workspace is clean.
   if [[ "$VIOLATION_COUNT" -eq 0 ]]; then
-    pass "convergence reached after $iteration iteration(s) — workspace is violation-free"
+    pass "convergence reached after $iteration correction iteration(s) — workspace is violation-free"
     break
   fi
 
@@ -260,7 +289,7 @@ while [[ $iteration -lt $MAX_ITER ]]; do
   echo "$DIAGNOSTIC_CONTEXT"
   echo ""
 
-  # Step 4: build agent prompt with structured violation data injected verbatim.
+  # Step 4: build correction prompt with structured violation data injected verbatim.
   PROMPT="${AGENT_TASK}
 
 The workspace at ${WORKSPACE} has policy violations that must be corrected.
@@ -273,9 +302,9 @@ ${LAST_VIOLATIONS}
 Apply all fixes before creating or renaming files. Where fix.type is 'rename',
 rename the file to fix.value. Resolve every violation before finishing."
 
-  # Step 5: run agent with diagnostic context.
-  echo "Running agent (iteration $iteration)..."
-  AGENT_LOG="/tmp/governance_agent_$$_${iteration}.txt"
+  # Step 5: run correction agent with diagnostic context.
+  echo "Running correction agent (iteration $iteration)..."
+  AGENT_LOG=$(mktemp /tmp/governance_agent_iter.XXXXXX)
   AGENT_EXIT=0
   (
     cd "$WORKSPACE"
@@ -286,7 +315,7 @@ rename the file to fix.value. Resolve every violation before finishing."
   ) >"$AGENT_LOG" 2>&1 || AGENT_EXIT=$?
 
   if [[ $AGENT_EXIT -ne 0 ]]; then
-    echo "WARNING: agent exited $AGENT_EXIT — see $AGENT_LOG for details"
+    echo "WARNING: correction agent exited $AGENT_EXIT — see $AGENT_LOG for details"
   fi
 
   # Step 6: wait for workspace changes before re-evaluating.
@@ -298,7 +327,7 @@ rename the file to fix.value. Resolve every violation before finishing."
 done
 
 if [[ $PASS -eq 0 && $iteration -ge $MAX_ITER ]]; then
-  fail "max iterations ($MAX_ITER) exceeded without convergence"
+  fail "max correction iterations ($MAX_ITER) exceeded without convergence"
 fi
 
 # ---- summary -----------------------------------------------------------------
