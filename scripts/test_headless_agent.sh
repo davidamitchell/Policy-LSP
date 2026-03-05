@@ -199,13 +199,6 @@ cat "$WORKSPACE/.github/lsp.json"
 echo "--- end LSP config ---"
 echo ""
 
-# ---- workspace trust ---------------------------------------------------------
-#
-# Explicitly trust the workspace so the Copilot CLI loads the local lsp.json
-# without a security prompt — a common silent failure point in headless CI.
-
-copilot --trust "$WORKSPACE"
-
 # ---- agent task: create a notes file with governance LSP active --------------
 #
 # The agent is asked to create my-notes.md.  That name violates the
@@ -214,19 +207,15 @@ copilot --trust "$WORKSPACE"
 # startup; when the agent creates my-notes.md, gov-lsp pushes the
 # markdown-naming-violation diagnostic inline.  The enforcement happens through
 # the native LSP protocol — not from a check run externally by this script.
-#
-# --debug captures LSP JSON-RPC traffic and agent reasoning for post-mortem
-# analysis when the test fails.
 
-echo "=== Copilot CLI agent task (with gov-lsp as native Language Server, debug enabled) ==="
+echo "=== Copilot CLI agent task (with gov-lsp as native Language Server) ==="
 AGENT_EXIT=0
 (
   cd "$WORKSPACE"
   copilot \
     -p "Create a md file called my-notes.md" \
     --autopilot \
-    --allow-all \
-    --debug > "$AGENT_LOGS" 2>&1
+    --allow-all > "$AGENT_LOGS" 2>&1
 ) || AGENT_EXIT=$?
 echo "=== end agent task (exit $AGENT_EXIT) ==="
 echo ""
