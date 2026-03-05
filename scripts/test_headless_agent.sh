@@ -107,9 +107,11 @@ POLICIES_DIR="$(realpath "${GOV_LSP_POLICIES:-./policies}")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_PATH="$SCRIPT_DIR/../.github/lsp-template.json"
 AGENT_LOGS="$(mktemp /tmp/agent_logs.XXXXXX)"
-# Export log path so the CI workflow can locate it for artifact upload.
+LSP_TRACE="$(mktemp /tmp/lsp_trace.XXXXXX)"
+# Export paths so the CI workflow can locate them for artifact upload.
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "agent_logs=$AGENT_LOGS" >> "$GITHUB_OUTPUT"
+  echo "lsp_trace=$LSP_TRACE" >> "$GITHUB_OUTPUT"
 fi
 
 PASS=0
@@ -171,7 +173,7 @@ pass "GH_TOKEN is set — copilot CLI headless agent ready"
 # ---- workspace isolation (always cleaned up) ---------------------------------
 
 WORKSPACE=$(mktemp -d)
-trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS"' EXIT
+trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS" "$LSP_TRACE"' EXIT
 
 echo "Workspace: $WORKSPACE"
 echo ""
@@ -186,12 +188,13 @@ echo ""
 mkdir -p "$WORKSPACE/.github"
 # Guard against paths containing the sed delimiter. Pipes are technically valid
 # in Linux paths but would silently corrupt the JSON substitution.
-if [[ "$BINARY_PATH" == *'|'* ]] || [[ "$POLICIES_DIR" == *'|'* ]]; then
+if [[ "$BINARY_PATH" == *'|'* ]] || [[ "$POLICIES_DIR" == *'|'* ]] || [[ "$LSP_TRACE" == *'|'* ]]; then
   echo "ERROR: path contains '|' which breaks sed substitution" >&2
   exit 1
 fi
 sed -e "s|GOV_LSP_BINARY|$BINARY_PATH|g" \
     -e "s|GOV_LSP_POLICIES|$POLICIES_DIR|g" \
+    -e "s|GOV_LSP_TRACE|$LSP_TRACE|g" \
     "$TEMPLATE_PATH" > "$WORKSPACE/.github/lsp.json"
 
 echo "--- workspace LSP config ---"
@@ -231,9 +234,54 @@ AGENT_EXIT=0
 echo "=== end agent task (exit $AGENT_EXIT) ==="
 echo ""
 
+# ---- assertions: LSP protocol engagement ------------------------------------
+#
+# These assertions prove that the LSP enforcement FRAMEWORK was engaged — not
+# just that the filesystem outcome happened to be correct.  The copilot CLI
+# must connect to gov-lsp, gov-lsp must emit diagnostics, and the specific
+# policy rule must have fired.  Without these checks the test could pass or
+# fail for reasons entirely unrelated to the LSP protocol.
+#
+# The LSP trace file is written by gov-lsp via the --trace-file flag.  It
+# contains the same bytes sent to the Copilot CLI's LSP client (Content-Length
+# framed JSON-RPC).  The trace file being non-empty is the minimum proof that
+# gov-lsp started and the CLI connected.
+
+echo "--- LSP trace (last 50 lines) ---"
+tail -50 "$LSP_TRACE" 2>/dev/null || true
+echo "--- end LSP trace ---"
+echo ""
+
+# Assertion 1: gov-lsp produced output — proves the server was started and
+# the Copilot CLI made at least one round-trip.
+if [[ ! -s "$LSP_TRACE" ]]; then
+  fail "LSP server produced no output — not started or not connected by the Copilot CLI"
+else
+  pass "LSP server produced output — connection established"
+fi
+
+# Assertion 2: publishDiagnostics was emitted — proves the diagnostics pipeline
+# fired during the agent's session.
+if ! grep -q '"textDocument/publishDiagnostics"' "$LSP_TRACE"; then
+  fail "publishDiagnostics was never emitted — LSP diagnostics pipeline did not fire"
+else
+  pass "publishDiagnostics was emitted — LSP diagnostics pipeline is active"
+fi
+
+# Assertion 3: the markdown-naming-violation rule fired — proves the policy
+# engine evaluated files and found the violation.
+# NOTE: "markdown-naming-violation" is the violation ID defined in
+# policies/filenames.rego.  If that ID changes, update this assertion too.
+if ! grep -q '"markdown-naming-violation"' "$LSP_TRACE"; then
+  fail "markdown-naming-violation was absent from LSP trace — policy rule did not fire"
+else
+  pass "markdown-naming-violation was present in LSP trace — policy rule is enforced"
+fi
+
 # ---- assertion: enforcement outcome ------------------------------------------
 #
-# The only assertion that matters: did the agent leave a policy-violating file?
+# The only filesystem assertion that matters: did the agent leave a
+# policy-violating file?
 #
 # my-notes.md EXISTS   → enforcement failed — the agent created a violating file
 #                        and the governance LSP did not catch it.  FAIL.

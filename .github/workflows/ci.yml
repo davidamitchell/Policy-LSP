@@ -73,12 +73,14 @@ jobs:
       - name: Upload agent debug logs
         # Always upload logs so LSP JSON-RPC traffic and agent reasoning are
         # available for post-mortem analysis regardless of test outcome.
-        # Path comes from the step output to support parallel runs using mktemp.
+        # Paths come from step outputs to support parallel runs using mktemp.
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: copilot-agent-debug-logs
-          path: ${{ steps.agent-test.outputs.agent_logs }}
+          path: |
+            ${{ steps.agent-test.outputs.agent_logs }}
+            ${{ steps.agent-test.outputs.lsp_trace }}
           if-no-files-found: ignore
 
       - name: Policy check (self-governance)

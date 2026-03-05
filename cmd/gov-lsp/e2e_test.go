@@ -501,8 +501,107 @@ func TestE2E_UnknownMethod(t *testing.T) {
 	}
 }
 
-// handshake performs the LSP initialize/initialized exchange and discards
-// the response so individual tests can start from a ready-to-use server.
+// newLSPSessionWithTraceFile starts gov-lsp with the --trace-file flag and
+// returns both the session handle and the path to the trace file.
+// The trace file is removed automatically when the test ends.
+func newLSPSessionWithTraceFile(t *testing.T) (*lspSession, string) {
+	t.Helper()
+
+	policiesDir, err := filepath.Abs("../../policies")
+	if err != nil {
+		t.Fatalf("resolve policies dir: %v", err)
+	}
+
+	tf, err := os.CreateTemp("", "gov-lsp-trace-*")
+	if err != nil {
+		t.Fatalf("create trace file: %v", err)
+	}
+	tracePath := tf.Name()
+	tf.Close() //nolint:errcheck
+	t.Cleanup(func() { os.Remove(tracePath) }) //nolint:errcheck
+
+	cmd := exec.Command(testBinaryPath,
+		"--policies", policiesDir,
+		"--log-level", "error",
+		"--trace-file", tracePath,
+	)
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+
+	sess := &lspSession{
+		t:      t,
+		stdin:  stdinPipe,
+		stdout: bufio.NewReader(stdoutPipe),
+		proc:   cmd,
+	}
+	t.Cleanup(func() {
+		stdinPipe.Close()
+		if cmd.Process != nil {
+			cmd.Process.Kill() //nolint:errcheck
+		}
+		cmd.Wait() //nolint:errcheck
+	})
+	return sess, tracePath
+}
+
+// TestE2E_TraceFile verifies that --trace-file mirrors LSP output to a file.
+// This is the foundation for the headless-agent integration test: the trace
+// file lets the CI script assert that publishDiagnostics was emitted during an
+// agent session without relying solely on filesystem outcome.
+func TestE2E_TraceFile(t *testing.T) {
+	sess, tracePath := newLSPSessionWithTraceFile(t)
+	handshake(t, sess)
+
+	// Open a violating file — gov-lsp must emit publishDiagnostics.
+	sess.sendMsg(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": map[string]interface{}{
+			"textDocument": map[string]interface{}{
+				"uri":        "file:///workspace/my-notes.md",
+				"languageId": "markdown",
+				"version":    1,
+				"text":       "# notes\n",
+			},
+		},
+	})
+
+	// Wait for the publishDiagnostics notification.
+	_ = sess.recvUntil(5*time.Second, isMethod("textDocument/publishDiagnostics"))
+
+	// Flush by sending shutdown and waiting for the response.  writeMessage
+	// calls bufio.Writer.Flush() after every message, so all LSP output —
+	// including the publishDiagnostics above — is durably in the trace file
+	// before we receive the shutdown response.  No sleep is required.
+	sess.sendMsg(map[string]interface{}{"jsonrpc": "2.0", "id": 99, "method": "shutdown", "params": nil})
+	_ = sess.recvUntil(5*time.Second, hasID(99))
+
+	traceBytes, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
+	trace := string(traceBytes)
+
+	if !strings.Contains(trace, `"textDocument/publishDiagnostics"`) {
+		t.Errorf("trace file does not contain publishDiagnostics; trace:\n%s", trace)
+	}
+	if !strings.Contains(trace, `"markdown-naming-violation"`) {
+		t.Errorf("trace file does not contain markdown-naming-violation; trace:\n%s", trace)
+	}
+}
+
+
 func handshake(t *testing.T, sess *lspSession) {
 	t.Helper()
 	sess.sendMsg(map[string]interface{}{

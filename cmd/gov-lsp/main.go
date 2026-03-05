@@ -3,7 +3,7 @@
 //
 // Usage (LSP server mode):
 //
-//	gov-lsp [--policies <dir>] [--log-level debug|info|warn|error]
+//	gov-lsp [--policies <dir>] [--log-level debug|info|warn|error] [--trace-file <path>]
 //
 // Usage (batch check mode):
 //
@@ -187,6 +187,7 @@ func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (i
 func runServer() {
 	policiesDir := flag.String("policies", defaultPoliciesDir(), "directory containing .rego policy files")
 	logLevel := flag.String("log-level", "warn", "log level: debug, info, warn, error")
+	traceFile := flag.String("trace-file", "", "mirror all LSP output to this file (for testing; empty = disabled)")
 	flag.Parse()
 
 	// Allow override via environment variable.
@@ -207,8 +208,22 @@ func runServer() {
 		os.Exit(1)
 	}
 
-	// Publisher writes LSP notifications to stdout.
-	writer := bufio.NewWriter(os.Stdout)
+	// Publisher writes LSP notifications to stdout, optionally mirroring to a
+	// trace file so integration tests can assert on LSP protocol traffic.
+	// writeMessage calls w.Flush() after every message, so each LSP frame is
+	// durably written to the trace file before the function returns — no signal
+	// handling or additional flushing is required for test correctness.
+	var out io.Writer = os.Stdout
+	if *traceFile != "" {
+		tf, err := os.Create(*traceFile)
+		if err != nil {
+			slog.Error("opening trace file", "path", *traceFile, "err", err)
+			os.Exit(1)
+		}
+		defer tf.Close() //nolint:errcheck
+		out = io.MultiWriter(os.Stdout, tf)
+	}
+	writer := bufio.NewWriter(out)
 	var writerMu sync.Mutex
 
 	publish := func(notif lsp.Notification) {
