@@ -104,7 +104,7 @@ func checkMain(args []string) int {
 // It returns the total number of violations found.
 func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (int, error) {
 	ctx := context.Background()
-	var results []CheckResult
+	results := make([]CheckResult, 0)
 	checked := 0
 
 	for _, root := range paths {

@@ -1,6 +1,6 @@
 # Progress
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
 
 ---
 
@@ -8,7 +8,7 @@ Last updated: 2026-03-04
 
 **Phase:** Epic 0 — Foundation (complete), Epic 1 — LSP completeness (in progress), Epic 2 — Operational Readiness (in progress), Epic 3 — MCP/Agent Integration (done)
 **Active slice:** W-0004 (policy hot-reload) is next
-**Branch:** `copilot/review-backlog-outcomes`
+**Branch:** `copilot/setup-minimal-scaffold`
 
 ---
 
@@ -23,6 +23,54 @@ Last updated: 2026-03-04
 ---
 
 ## Work Log
+
+### 2026-03-05 — Session 8 (Issue: production-quality governance loop)
+
+**Problem:** The minimal scaffold script in the issue grepped raw LSP stdout
+for `publishDiagnostics`, iterated a fixed number of times, and injected raw
+log strings into the agent prompt — all fragile patterns.
+
+**Changes:**
+
+- **`scripts/governance_loop.sh`** — new script implementing the four
+  improvements requested in the issue:
+
+  1. *Structured JSON diagnostics* — `gov-lsp check --format json` produces a
+     clean violation array.  No LSP server background process, no
+     Content-Length frame parsing, no log-grepping.
+
+  2. *Filesystem watcher* — `inotifywait` (Linux), `fswatch` (macOS), or a
+     `find -newer` polling fallback.  Re-evaluation is triggered by actual
+     workspace changes, not a fixed timer.
+
+  3. *Structured violation JSON injected verbatim* — both a human-readable
+     summary (jq / python3 / raw fallback) and the raw JSON array are
+     included in the agent prompt.  The model receives `fix.type` and
+     `fix.value` directly.
+
+  4. *Convergence-based termination* — the loop exits when
+     `gov-lsp check` returns zero violations.  `MAX_ITER` is a safety
+     backstop, not the primary exit condition.
+
+- **`cmd/gov-lsp/main.go`** — `runCheck()` now initialises `results` with
+  `make([]CheckResult, 0)` so the `--format json` output is `[]` (not `null`)
+  when there are no violations.  This makes it safe to pipe into
+  `jq 'length'` without null-guards.
+
+**Verification:**
+
+```
+go build ./...          OK
+go vet ./...            OK
+go test ./...           OK  (3 packages, all pass)
+scripts/smoke_test.sh   PASS
+gov-lsp check --format json (zero violations) → []  (was null)
+gov-lsp check --format json (with violations) → [...] array
+bash -n governance_loop.sh  → Syntax OK
+gov-lsp check .             → 15 violations (all markdown-naming in docs/ — intentional)
+```
+
+---
 
 ### 2026-03-04 — Session 7 (Issues #4 and #6: close open issues)
 
