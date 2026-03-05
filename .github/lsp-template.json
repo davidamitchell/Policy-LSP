@@ -2,7 +2,7 @@
   "lspServers": {
     "gov-lsp": {
       "command": "GOV_LSP_BINARY",
-      "args": ["-policies", "GOV_LSP_POLICIES"],
+      "args": ["-policies", "GOV_LSP_POLICIES", "--log-level", "debug"],
       "fileExtensions": {
         ".md": "markdown",
         ".go": "go",

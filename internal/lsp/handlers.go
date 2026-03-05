@@ -5,6 +5,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -211,6 +212,9 @@ func (h *Handler) Handle(ctx context.Context, req *Request) *Response {
 }
 
 func (h *Handler) handleInitialize(req *Request) *Response {
+	var params InitializeParams
+	_ = json.Unmarshal(req.Params, &params)
+	slog.Debug("gov-lsp initialize", "rootUri", params.RootURI)
 	result := InitializeResult{
 		Capabilities: ServerCapabilities{
 			TextDocumentSync:   1, // Full sync
@@ -225,6 +229,7 @@ func (h *Handler) handleDidOpen(ctx context.Context, req *Request) {
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return
 	}
+	slog.Debug("gov-lsp didOpen", "uri", params.TextDocument.URI)
 	h.evaluateAndPublish(ctx, params.TextDocument.URI, params.TextDocument.Text)
 }
 
@@ -238,6 +243,7 @@ func (h *Handler) handleDidChange(ctx context.Context, req *Request) {
 	}
 	text := params.ContentChanges[len(params.ContentChanges)-1].Text
 	uri := params.TextDocument.URI
+	slog.Debug("gov-lsp didChange", "uri", uri)
 
 	h.debounceMu.Lock()
 	if t, ok := h.debounce[uri]; ok {
@@ -283,6 +289,7 @@ func (h *Handler) evaluateAndPublish(ctx context.Context, uri, text string) {
 			Diagnostics: diags,
 		},
 	})
+	slog.Debug("gov-lsp publishDiagnostics", "uri", uri, "count", len(diags))
 }
 
 // violationToDiagnostic maps a policy Violation to an LSP Diagnostic.
