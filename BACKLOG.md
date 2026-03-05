@@ -536,13 +536,20 @@ updated: 2026-03-05
 
 ### Outcome
 
-`scripts/test_headless_agent.sh` proves the LSP *diagnostic feedback loop* is active, not merely that the agent avoids creating a file. The test captures evidence that the agent received and reacted to a `textDocument/publishDiagnostics` notification from gov-lsp (e.g. a log line containing the diagnostic message, or the agent's output referencing the violation). If no diagnostic evidence is present and the violating file is absent, the test exits 1 and reports "INCONCLUSIVE — LSP loop not confirmed". It must never exit 0 in that case.
+The headless-agent enforcement loop is proved to work end-to-end. Specifically:
+
+1. The copilot CLI receives `textDocument/publishDiagnostics` events from gov-lsp when it creates or edits a `.md` file.
+2. The agent reacts to those diagnostics and self-corrects (renames or deletes the violating file) before completing its task.
+3. `scripts/test_headless_agent.sh` captures evidence of (1) and asserts (2). If evidence of (1) is absent, the test exits 1 with "INCONCLUSIVE — LSP loop not confirmed". It must never exit 0 when the loop is not demonstrably active.
+4. `.github/workflows/ci.yml` has no `continue-on-error` on the headless agent step — a test failure is a CI failure, full stop.
 
 **Non-negotiable constraint:** a test that passes when the LSP loop is not demonstrably active is worse than no test. If diagnostic evidence cannot be captured for a given `copilot` CLI version, the test must fail loudly, not silently pass.
 
 ### Context
 
-The current test asserts an *outcome* (file absent = pass) but not the *mechanism* (agent received streamed LSP diagnostics and self-corrected). An agent that simply declines to create any file would pass today. The distinction matters: the project's goal (AGENTS.md "True Goal") is to prove that the LSP diagnostic stream is the enforcement rail — not that the agent happens to not create the file. Capturing diagnostic evidence (from the agent's output or gov-lsp's stderr) is the minimum bar for proving the loop is live.
+CI run 2026-03-05 confirmed the enforcement loop is broken: the copilot CLI created `my-notes.md` (the policy-violating file) and the LSP diagnostics did not prevent it. The test script correctly exited 1 with "Framework BROKEN", but `continue-on-error: true` in `.github/workflows/ci.yml` swallowed that failure and let the CI job succeed — producing a fake green build. That `continue-on-error` has now been removed (commit in this session).
+
+The underlying architectural cause is still unknown: either the copilot CLI does not connect to gov-lsp via `lspServers`, does not block on `publishDiagnostics` events before completing file writes, or the diagnostic arrives after the file is already persisted. Diagnosing this requires the agent debug logs from the failed CI run.
 
 ---
 

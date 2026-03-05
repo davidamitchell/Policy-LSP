@@ -62,13 +62,14 @@ jobs:
         # Requires COPILOT_GITHUB_TOKEN secret exported as GH_TOKEN.  The test fails
         # intentionally in environments where that secret is absent — that is the correct
         # result for an unconfigured headless-agent environment.
+        # NOTE: continue-on-error is intentionally absent. If enforcement fails, CI fails.
+        # A passing CI that hides a broken enforcement loop is worse than a failing one.
         id: agent-test
         env:
           GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           GOV_LSP_POLICIES: ./policies
         run: |
           bash scripts/test_headless_agent.sh /tmp/gov-lsp
-        continue-on-error: true
 
       - name: Upload agent debug logs
         # Always upload logs so LSP JSON-RPC traffic and agent reasoning are
