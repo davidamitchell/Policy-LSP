@@ -87,7 +87,7 @@ POLICIES_DIR="$(realpath "${GOV_LSP_POLICIES:-./policies}")"
 # Resolve script paths relative to this file's location so the test can be
 # invoked from any working directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GOVERNANCE_LOOP="$SCRIPT_DIR/governance_loop.sh"
+GOVERNANCE_LOOP="$SCRIPT_DIR/governance_loop/governance_loop.sh"
 AGENT_LOGS="$(mktemp /tmp/agent_logs.XXXXXX)"
 # Export log path so the CI workflow can locate it for artifact upload.
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -132,7 +132,7 @@ if [[ ! -f "$GOVERNANCE_LOOP" ]]; then
   echo "ERROR: governance loop script not found: $GOVERNANCE_LOOP" >&2
   exit 1
 fi
-log_info "governance_loop.sh found path=$GOVERNANCE_LOOP"
+log_info "governance_loop.sh found (canonical path) path=$GOVERNANCE_LOOP"
 
 # ---- preflight: Copilot CLI installation -------------------------------------
 
