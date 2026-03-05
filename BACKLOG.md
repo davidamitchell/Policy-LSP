@@ -573,7 +573,7 @@ Current docs conflate the two or omit the IDE persona entirely. The ADR index (`
 
 ## W-0034
 
-status: ready
+status: in-progress
 created: 2026-03-05
 updated: 2026-03-05
 
@@ -583,23 +583,27 @@ The Copilot CLI (`--autopilot --allow-all`) sends `textDocument/didOpen` (or equ
 
 ### Context
 
-CI run 2026-03-05 confirmed the loop is broken: the agent created `my-notes.md` without gov-lsp ever publishing diagnostics. The root cause is unknown. Three hypotheses, in priority order:
+**Hypothesis 1 confirmed (2026-03-05).** CI run on commit `178df8b` with `slog.Debug` tracing enabled and `--log-level debug` set in `lsp-template.json` produced zero `gov-lsp initialize` lines in the agent debug logs. The lsp.json was correctly placed and formatted (visible in CI step output). Gov-lsp was never started. The Copilot CLI in `--autopilot` mode does not start or connect to LSP servers declared in `.github/lsp.json`. The `lspServers` feature is interactive-only — it requires the `/lsp` command in a chat session. In headless autopilot, the CLI spawns the LLM agent directly without initialising any language servers.
 
-1. **No connection** — the Copilot CLI in `--autopilot` mode does not connect to LSP servers declared in `.github/lsp.json`. The `lspServers` feature may be interactive-only (requires `/lsp` command, not triggered in autopilot). Evidence: if CI agent debug logs contain no `gov-lsp initialize` line after adding debug logging (W-0034 prerequisite committed), the CLI never started gov-lsp.
+Three hypotheses were proposed, in priority order:
 
-2. **Connection established but no file-event** — the CLI connects and completes the LSP handshake, but the agent's internal "create file" tool does not send `textDocument/didOpen` or `textDocument/didChange`. LSP diagnostics are advisory-push; the server only evaluates when the client notifies it. Evidence: `gov-lsp initialize` appears in logs but no `gov-lsp didOpen`.
+1. **No connection** ✓ CONFIRMED — the Copilot CLI in `--autopilot` mode does not connect to LSP servers declared in `.github/lsp.json`. The `lspServers` feature is interactive-only (requires `/lsp` command, not triggered in autopilot). Zero `gov-lsp initialize` trace lines in CI debug logs prove the CLI never started gov-lsp.
 
-3. **Event arrives after file is persisted** — the CLI sends `didOpen` *after* writing the file to disk, so the diagnostic arrives too late for the agent to self-correct within the same tool call. Standard LSP is not transactional; there is no mechanism to block a file write pending a diagnostic response.
+2. **Connection established but no file-event** — the CLI connects and completes the LSP handshake, but the agent's internal "create file" tool does not send `textDocument/didOpen` or `textDocument/didChange`. Superseded by hypothesis 1.
+
+3. **Event arrives after file is persisted** — the CLI sends `didOpen` *after* writing the file to disk. Superseded by hypothesis 1.
 
 ### Investigation Steps
 
-1. Read the agent debug logs artifact from the next CI run (gov-lsp now emits `slog.Debug` at `initialize`, `didOpen`, `didChange`, `publishDiagnostics`; lsp-template.json now passes `--log-level debug`). The logs will confirm which hypothesis is correct.
+1. ~~Read the agent debug logs artifact from the next CI run~~ — Done. Confirmed Hypothesis 1.
 
-2. If hypothesis 1 (no connection): file an issue against `github/copilot-cli` for `lspServers` not being activated in `--autopilot` mode. As a workaround, explore whether a `workspace/didCreateFiles` notification can be sent by the test harness (not the agent — the harness pre-creates the file and notifies gov-lsp, then asserts the agent's next action is compliant). This is not true enforcement but documents the limitation.
+2. File an issue against `github/copilot-cli` for `lspServers` not being activated in `--autopilot` mode. Reference issues #491, #1812, #1373.
 
-3. If hypothesis 2 (no file-event): add `workspace/didCreateFiles` handler to gov-lsp (LSP 3.16, params: `{ files: [{ uri }] }`). If the CLI sends this notification for agent-created files, gov-lsp can evaluate and publish diagnostics. Alternatively, add a filesystem watcher (fsnotify) so gov-lsp detects new files without waiting for LSP events — this is a server-side workaround that doesn't require CLI changes.
+3. As a workaround (server-side, no CLI changes needed): add a filesystem watcher (fsnotify) to gov-lsp so it detects new files without waiting for LSP events. When gov-lsp detects a new file it evaluates and publishes diagnostics to the client. This works even if the CLI doesn't send `didOpen` — but the agent still needs to receive the diagnostic and react. If the CLI never delivers diagnostics to the agent context in autopilot, a fsnotify watcher alone is insufficient.
 
-4. If hypothesis 3 (timing): explore whether the Copilot CLI agent loop re-evaluates after receiving `publishDiagnostics`, or whether it is a single-pass tool call. If re-evaluation is possible, the test needs a second agent turn (e.g., "now verify no violations exist"). Document this as an architectural constraint in `AGENTS.md`.
+4. Explore prompt engineering: explicitly tell the agent to check file naming policy before writing and to use SCREAMING_SNAKE_CASE. The agent can self-correct via reasoning without needing the LSP diagnostic stream. This is not "LSP enforcement" but it would pass the test. Document clearly in `AGENTS.md` and `PROGRESS.md` which mechanism is actually providing enforcement.
+
+5. Longer term: evaluate whether the `--acp` Agent Client Protocol flag (replacing `--headless` in newer CLI versions) provides a mechanism to inject LSP diagnostics into the agent loop.
 
 ### Non-negotiable constraint
 
