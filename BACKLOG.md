@@ -507,3 +507,56 @@ updated: 2026-03-02
 
 Without the SessionStart hook, all three enforcement paths (PostToolUse hook, LSP server, MCP tool) are silently inactive when the binary is absent. `lsp-start.sh` and `mcp-start.sh` attempt inline builds but fail without network or vendor/. The SessionStart hook fires before any agent turn, ensuring enforcement is always active. Implemented in this session (2026-03-02).
 
+---
+
+## W-0031
+
+status: ready
+created: 2026-03-05
+updated: 2026-03-05
+
+### Outcome
+
+`TestRunCheck_SelfGovernance_DetectsRepoViolations` in `cmd/gov-lsp/` is replaced by a hermetic, falsifiable test. The new test uses `testing/fstest.MapFS` to supply a fixed set of files with known-violating names (e.g. `docs/lowercase.md`) and known-compliant names (e.g. `UPPER.md`). It asserts that the violation count is exactly the number of violating files provided — the test fails if the engine returns 0 results (policy broken) or more than expected (false positives). The real-filesystem walk via `filepath.Abs("../../")` is removed entirely.
+
+### Context
+
+The existing test has three defects identified in PR review (2026-03-05):
+1. **Not falsifiable** — the test comment explicitly says "If someone has renamed the files to be compliant, that is also correct", so `count == 0` passes. A test with no failure condition proves nothing (see AGENTS.md: "A Rego rule that cannot produce a falsifiable result has no value").
+2. **Real-FS coupling** — `filepath.Abs("../../")` ties the test to physical repo layout; it silently skips if `docs/` moves.
+3. **Hidden output** — violations logged via `t.Logf` are swallowed without `-v`; the only live assertion (`strings.Contains(buf, "Checked")`) passes even when the engine returns 0 results.
+
+---
+
+## W-0032
+
+status: ready
+created: 2026-03-05
+updated: 2026-03-05
+
+### Outcome
+
+`scripts/test_headless_agent.sh` is strengthened to prove the LSP *diagnostic feedback loop* is active, not merely that the agent avoids creating a file. Specifically: the test captures the agent's stdout/stderr and asserts the presence of evidence that the agent received and reacted to a `textDocument/publishDiagnostics` notification from gov-lsp (e.g. a log line containing the diagnostic message, or the agent's reasoning referencing the violation). If no diagnostic evidence is found and the violating file is absent, the test must report an inconclusive result rather than a false pass — the absence of the file alone does not prove the LSP loop fired.
+
+### Context
+
+The current test asserts an *outcome* (file absent = pass) but not the *mechanism* (agent received streamed LSP diagnostics and self-corrected). An agent that simply declines to create any file would pass today. The distinction matters: the project's goal (AGENTS.md "True Goal") is to prove that the LSP diagnostic stream is the enforcement rail — not that the agent happens to not create the file. Capturing diagnostic evidence (from the agent's debug output or gov-lsp's stderr) is the minimum bar for proving the loop is live.
+
+---
+
+## W-0033
+
+status: ready
+created: 2026-03-05
+updated: 2026-03-05
+
+### Outcome
+
+Documentation across `README.md`, `docs/`, and `AGENTS.md` is reorganised to clearly present the two supported personas and their respective enforcement paths:
+
+1. **Headless agent governance** — a coding agent (e.g. Copilot CLI, Claude Code) operating without an IDE receives real-time LSP diagnostics through the `lspServers` config in `.github/lsp.json` / `.claude/lsp.json`. Violations arrive as `publishDiagnostics` events on every file open/change, identical to IDE squiggles. The agent self-corrects before completing its task.
+
+2. **IDE-integrated policy enforcement** — a human developer using VS Code, Neovim, or any LSP-capable editor gets inline diagnostics and one-click `codeAction` fixes from gov-lsp registered as a language server.
+
+Current docs conflate the two or omit the IDE persona entirely. The ADR index (`docs/adr/README.md`) and `docs/integrations.md` are updated to cover both paths. `AGENTS.md` testing section is updated to distinguish unit tests (hermetic, `fstest.MapFS`), smoke tests (binary + real policies), and headless-agent integration tests (live `copilot` CLI, real auth required).
+
