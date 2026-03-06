@@ -13,6 +13,10 @@
 //
 //	gov-lsp mcp [--policies <dir>]
 //
+// Usage (version):
+//
+//	gov-lsp --version
+//
 // In server mode the server reads JSON-RPC messages from stdin and writes
 // responses to stdout.  In check mode it walks the given paths, evaluates each
 // file against all loaded policies, prints violations to stdout, and exits 1 if
@@ -39,9 +43,15 @@ import (
 	"github.com/davidamitchell/policy-lsp/internal/lsp"
 )
 
+// Version is the current release version of gov-lsp.
+const Version = "0.1.0"
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "--version", "-version", "version":
+			fmt.Println(Version)
+			return
 		case "check":
 			os.Exit(checkMain(os.Args[2:]))
 		case "mcp":
