@@ -18,6 +18,8 @@ An IDE-free agent has no LSP client, no inline feedback, and no natural guardrai
 
 **What "enforcement works" means:** An agent given governance tools as part of its environment catches its own policy violations and self-corrects — before the violating file persists. The test for this is the outcome: the policy-violating file must not exist when the agent finishes. If it does exist, enforcement failed.
 
+**Success Metrics for Code Quality:** All features must converge in tests (e.g., governance loops must reach zero violations within a small, bounded number of iterations — not spiral endlessly). Basic errors like undefined flags, missing dependencies, or misleading outputs indicate a failure in problem-solving — anticipate and test for them upfront.
+
 The two core concerns of this repo are intentionally separate:
 
 1. **Server** — `cmd/gov-lsp/` and `internal/` contain the Go LSP implementation. This is a protocol-correct, stdio-based JSON-RPC server with a clean transport/engine boundary.
@@ -36,6 +38,9 @@ AI agents and human developers both drift toward local idiom and away from proje
 - **The transport layer and the engine are separate concerns.** `cmd/gov-lsp/main.go` handles framing only. `internal/engine/` is pure OPA evaluation logic with no protocol knowledge.
 - **Every policy must be end-to-end testable.** A Rego rule that cannot produce a falsifiable result (pass and fail) has no value. Unit tests must cover both the compliant and violating cases.
 - **Keep PROGRESS.md updated** after every meaningful commit. It is the primary handoff document between sessions.
+- **Always verify external dependencies and CLI options before use.** Check that binaries and flags exist (e.g., run `copilot --help` before assuming `--trust` is a valid option). Provide fallbacks or clear error messages when tools are absent.
+- **Logic must detect and prevent infinite loops.** In scripts like `governance_loop.sh`, hash the previous violation set per iteration and exit early when there is no change. Cap iterations at a sensible maximum.
+- **Prompts and outputs must be resilient to parsing errors.** Include fallbacks for empty or malformed data. Never emit "No violations found" when violations are present; validate with a concrete example before shipping.
 
 ---
 
@@ -55,6 +60,14 @@ AI agents and human developers both drift toward local idiom and away from proje
 - Run `go vet ./...` before committing.
 - Variable names follow Go convention: short in narrow scope (`v`, `err`), descriptive in wide scope (`violationList`).
 - Prefer table-driven tests (`for _, tc := range cases { ... }`) over duplicated test functions.
+
+### Bash and Python Scripts
+
+- Use `set -euo pipefail` at the top of every Bash script to fail on errors.
+- Always quote variables (`"$var"`) to prevent word-splitting.
+- Wrap external commands in functions that check exit codes and log failures (e.g., `"Command failed: $output"`).
+- For `jq` / JSON parsing, dump raw output to a temp file (`mktemp`) when debugging manually and add unit tests for edge cases like empty arrays.
+- In Python, use type hints and handle exceptions explicitly (e.g., `json.JSONDecodeError`).
 
 ### Project Layout
 
@@ -82,6 +95,8 @@ scripts/
 └── smoke_test.sh         # End-to-end: pipe mock LSP messages, assert diagnostic output
 ```
 
+Scripts must include preflight functions that check required binaries, valid flags, and optional dependencies before executing any substantive logic.
+
 ### LSP Protocol Rules
 
 - **Request vs Notification**: a message with an `id` field is a request and requires a response. A message without `id` is a notification; do not respond.
@@ -97,12 +112,14 @@ scripts/
 - The `deny` rule returns a **set of objects**. Each object must have at minimum `"id"` and `"message"` fields. Optional fields: `"level"` (`"error"` | `"warning"` | `"info"`), `"location"` (`{"line": int, "column": int}`), `"fix"` (`{"type": "rename" | "insert" | "delete", "value": string}`).
 - Policies are loaded at startup from `--policies` flag or `GOV_LSP_POLICIES` env var. They are not hot-reloaded by default (see backlog W-0004).
 - Tests for Rego policies belong in Go test files in `internal/engine/`, not in separate `.rego` test files.
+- Include a brief comment in each policy with an example compliant and violating input so agents can understand expected behaviour without reading the tests.
 
 ### Error Handling
 
 - Engine evaluation errors must be logged to stderr and must not crash the server. Publish an empty diagnostics array on error to avoid stale diagnostics.
 - LSP parse errors (malformed JSON-RPC) must log the error and continue the loop — do not `os.Exit`.
 - Unknown LSP methods that have an `id` return a `method not found` error response (`code: -32601`).
+- In scripts, wrap external commands (e.g., `jq`, `copilot`) in functions that check exit codes and provide meaningful error output (e.g., `"gov-lsp check failed: $output"`). Do not silently swallow non-zero exit codes.
 
 ### Testing
 
@@ -112,12 +129,36 @@ scripts/
 - **Bug fixes must start with a failing test.** Confirm the failure before writing the fix.
 - The smoke test (`scripts/smoke_test.sh`) is an integration test; run it after building the binary.
 - **Headless-agent integration tests prove the outcome, not the check.** `scripts/test_headless_agent.sh` tests the full enforcement loop with an authenticated `copilot` CLI session. The test creates a workspace with gov-lsp registered as its Language Server in `.github/lsp.json` (the `lspServers` schema the Copilot CLI reads at startup). Enforcement happens **inside the agent's session** — the Copilot CLI connects to gov-lsp via the LSP protocol and the agent receives inline diagnostics automatically when it opens or edits files. The test script never calls `gov-lsp check` directly. The test asserts the outcome: the policy-violating file must NOT exist when the agent finishes. **If `notes.md` exists, enforcement failed — the test must fail.** Do not bypass the authentication check or simulate the agent's action to make the test pass — a test that passes without the real environment tells you nothing about whether the framework works. If the test fails because `copilot` is not authenticated, that is the correct result for an unconfigured environment.
+- **Add unit tests for all logic paths.** For Bash scripts use Bats; for Python use pytest. Cover happy paths, error paths (e.g., missing tool), and boundary cases (e.g., zero violations, malformed JSON).
 
 ### Logging
 
 - Use `log.Printf` to stderr for structured diagnostics during development.
 - In production, the server must produce **no output to stderr** except genuine errors. Diagnostic output to stderr corrupts the LSP stdio stream.
 - Do not use `fmt.Println` or `log.Fatal` anywhere that could emit on the stdio transport.
+
+---
+
+## Common Pitfalls and Prevention
+
+To avoid basic errors that break tests or loops:
+
+- **Undefined flags/options:** Always implement standard flags (`--version`, `--help`). Test CLI invocations in preflights before assuming options like `--trust` exist.
+- **Missing dependencies:** Scripts must check for tools (`inotifywait`, `jq`) at startup and either fall back to polling or exit with a clear message. In CI/container environments, install required tools in the setup step; do not auto-install silently in user environments.
+- **Formatting/parsing bugs:** Debug output pipelines with raw dumps (e.g., `echo "$json" > /tmp/debug.json`). Handle empty arrays explicitly — never produce "No violations found" when violations are present.
+- **Looping logic flaws:** Compare violation fingerprints (e.g., `sha256sum`) across iterations. Exit immediately on no-change states; cap at a maximum iteration count.
+- **Agent inaction:** Prompts must be imperative and include concrete examples (e.g., `mv notes.md NOTES.md`) plus a self-validation step so the agent can confirm the fix.
+
+---
+
+## Debugging and Problem-Solving Guidelines
+
+When generating or fixing code:
+
+- **Step-by-step before coding:** Outline (1) problem analysis, (2) assumptions checked, (3) solution plan, (4) tests needed. Do not skip to implementation.
+- **Reproduce errors first:** For failing tests or scripts, run with verbose flags (`bash -x script.sh`, `go test -v ./...`) and read the full output before changing anything.
+- **Validate outputs explicitly:** After a change, verify the result directly (e.g., `ls notes.md` must fail, `go test ./...` must pass). Update `PROGRESS.md` with findings.
+- **Prompt engineering for agent loops:** Use imperative language, chain-of-thought steps, and few-shot examples. Include a fallback action for every conditional branch.
 
 ---
 
