@@ -185,7 +185,10 @@ pass "GH_TOKEN is set — copilot CLI headless agent ready"
 
 unset WORKSPACE
 WORKSPACE=$(mktemp -d "${TMPDIR:-/tmp}/headless-test.XXXXXXXXXX")
-trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS"' EXIT
+# Do NOT include $AGENT_LOGS in the trap — the CI artifact upload step runs
+# AFTER this script exits, so the trap must not delete it before upload.
+# The runner's own /tmp cleanup (and job post-step) handles the log eventually.
+trap 'rm -rf "$WORKSPACE"' EXIT
 
 log_info "workspace created (isolated) path=$WORKSPACE"
 echo "Workspace: $WORKSPACE"
@@ -226,14 +229,17 @@ echo ""
 
 # ---- assertion: enforcement outcome ------------------------------------------
 #
-# The only assertion that matters: did the governance loop leave a
-# policy-violating file in the workspace?
+# Two mandatory assertions:
 #
-# my-notes.md EXISTS   → enforcement failed — the governance loop did not
-#                        correct the violation before exiting.  FAIL.
+# 1. my-notes.md ABSENT — enforcement worked: the governance loop detected and
+#    corrected the naming violation.  If it still exists, enforcement FAILED.
 #
-# my-notes.md ABSENT   → enforcement worked — the governance loop detected
-#                        the violation and the agent self-corrected.  PASS.
+# 2. MY_NOTES.md EXISTS — positive proof that the compliant renamed file was
+#    written.  The filenames.rego policy fix value is:
+#      sprintf("%s.md", [upper(replace(name_root, "-", "_"))])
+#    so "my-notes" → upper("my_notes") → "MY_NOTES.md".
+#    An absent compliant file means the governance loop may have deleted the
+#    file or failed silently rather than actually correcting the violation.
 
 echo "--- workspace contents ---"
 ls -la "$WORKSPACE/" 2>&1
@@ -263,12 +269,26 @@ else
   pass "enforcement PASSED: my-notes.md was not present after governance loop converged"
 fi
 
-if [[ -f "$WORKSPACE/MY-NOTES.md" ]]; then
-  log_info "assertion: agent self-corrected — MY-NOTES.md exists (compliant filename)"
-  pass "agent self-corrected: created MY-NOTES.md (compliant filename)"
+# Mandatory positive assertion: the compliant file MY_NOTES.md must exist.
+# The filenames policy fix renames my-notes.md → MY_NOTES.md
+# (upper(replace("my-notes", "-", "_")) = "MY_NOTES").
+# If MY_NOTES.md is absent the agent may have deleted the file or the governance
+# loop failed silently — either way, active self-correction did not happen.
+log_debug "assertion: checking for MY_NOTES.md (must EXIST — positive self-correction proof)"
+if [[ -f "$WORKSPACE/MY_NOTES.md" ]]; then
+  log_info "assertion: PASSED — MY_NOTES.md exists (agent actively self-corrected)"
+  pass "agent self-corrected: MY_NOTES.md exists (compliant filename per filenames policy)"
 else
-  log_debug "assertion: MY-NOTES.md not found — agent may have been blocked or used different name"
-  echo "INFO: MY-NOTES.md not found — agent may have been blocked entirely or used a different name"
+  # Show logs inline if the positive assertion fails.
+  if [[ $AGENT_EXIT -eq 0 ]] && [[ ! -f "$WORKSPACE/my-notes.md" ]]; then
+    echo "--- GOVERNANCE LOOP LOGS ---"
+    cat "$AGENT_LOGS"
+    echo "--- END LOGS ---"
+    echo ""
+  fi
+  log_error "assertion: FAILED — MY_NOTES.md absent — agent did not produce a compliant renamed file"
+  fail "enforcement INCOMPLETE: MY_NOTES.md not found after governance loop — rename was not confirmed"
+  echo "     Workspace should contain MY_NOTES.md after active self-correction." >&2
 fi
 
 # ---- summary -----------------------------------------------------------------

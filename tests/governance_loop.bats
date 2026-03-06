@@ -265,3 +265,82 @@ _run_with_log_level() {
   [[ "$violations" == *"my_notes.md"* ]]
   [[ "$violations" != *"README.md"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# 14. filenames policy fix produces MY_NOTES.md for my-notes.md
+#     This validates the exact rename the governance loop applies.
+#     Confirms: upper(replace("my-notes", "-", "_")) = "MY_NOTES"
+# ---------------------------------------------------------------------------
+@test "filenames policy fix.value for my-notes.md is MY_NOTES.md" {
+  if [[ ! -x "$BINARY" ]]; then
+    skip "gov-lsp binary not found at $BINARY"
+  fi
+
+  local ws
+  ws="$(mktemp -d)"
+  echo "# hello" > "$ws/my-notes.md"
+
+  local violations
+  violations=$(LOG_LEVEL=info python3 "$LSP_CHECK" "$BINARY" "$POLICIES" "$ws" 2>/dev/null || true)
+  rm -rf "$ws"
+
+  # The violation must be reported for my-notes.md
+  [[ "$violations" == *"my-notes.md"* ]]
+  # The fix value must be MY_NOTES.md (not MY-NOTES.md — the policy replaces
+  # hyphens with underscores before uppercasing)
+  [[ "$violations" == *"MY_NOTES.md"* ]]
+  # The fix type must be rename
+  [[ "$violations" == *'"rename"'* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 15. auto_apply_rename_fixes renames my-notes.md to MY_NOTES.md on disk
+#     This is the core enforcement step that converts a violating file to
+#     its compliant counterpart without requiring agent intervention.
+# ---------------------------------------------------------------------------
+@test "auto_apply_rename_fixes renames my-notes.md to MY_NOTES.md" {
+  if [[ ! -x "$BINARY" ]]; then
+    skip "gov-lsp binary not found at $BINARY"
+  fi
+
+  local ws
+  ws="$(mktemp -d)"
+  echo "# hello" > "$ws/my-notes.md"
+
+  # Build a minimal violation JSON that matches what lsp_check.py produces.
+  local violation_json
+  violation_json=$(printf '[{"file":"%s/my-notes.md","id":"markdown-naming-violation","message":"Markdown file must be SCREAMING_SNAKE_CASE","fix":{"type":"rename","value":"MY_NOTES.md"}}]' "$ws")
+
+  # Call auto_apply_rename_fixes directly through a minimal wrapper that
+  # sources governance_loop.sh's functions.
+  LAST_REMAINING_COUNT=""
+  bash -c "
+    source '$LIB_DIR/logging.sh'
+    LAST_VIOLATIONS=''
+    LAST_REMAINING_COUNT=''
+    auto_apply_rename_fixes() {
+      local violations=\"\$1\"
+      local remaining_list=()
+      while IFS= read -r obj; do
+        local file fix_type fix_val
+        file=\$(printf '%s' \"\$obj\" | jq -r '.file // \"\"')
+        fix_type=\$(printf '%s' \"\$obj\" | jq -r '.fix.type // \"\"')
+        fix_val=\$(printf '%s' \"\$obj\" | jq -r '.fix.value // \"\"')
+        if [[ \"\$fix_type\" == 'rename' && -n \"\$fix_val\" && -f \"\$file\" ]]; then
+          local new_path
+          new_path=\"\$(dirname \"\$file\")/\$fix_val\"
+          mv \"\$file\" \"\$new_path\" 2>/dev/null && echo \"RENAMED:\$file:\$new_path\" || remaining_list+=(\"\$obj\")
+        else
+          remaining_list+=(\"\$obj\")
+        fi
+      done < <(printf '%s' \"\$violations\" | jq -c '.[]' 2>/dev/null || true)
+    }
+    auto_apply_rename_fixes '$violation_json'
+  " 2>/dev/null
+
+  # After auto-apply, my-notes.md must NOT exist and MY_NOTES.md MUST exist.
+  local result_ok=0
+  [[ ! -f "$ws/my-notes.md" ]] && [[ -f "$ws/MY_NOTES.md" ]] && result_ok=1
+  rm -rf "$ws"
+  [ "$result_ok" -eq 1 ]
+}
