@@ -159,6 +159,11 @@ if [[ "$USE_LSP_SIM" == "1" ]]; then
 fi
 
 # ---- workspace ---------------------------------------------------------------
+#
+# The workspace must be an isolated temporary directory, not the repository
+# root or the current working directory.  Using the repo root causes
+# gov-lsp check to walk the entire repository on every correction iteration,
+# multiplying evaluation cost by the number of repo files × MAX_ITER.
 
 if [[ -z "$WORKSPACE" ]]; then
   WORKSPACE=$(mktemp -d "/tmp/gov_workspace_$$.XXXXXX")
@@ -168,6 +173,13 @@ else
   log_debug "workspace provided path=$WORKSPACE"
 fi
 mkdir -p "$WORKSPACE"
+
+# Guard: warn loudly if the workspace looks like a repository root (contains
+# a .git directory).  This is the most common cause of whole-repo scanning.
+if [[ -d "$WORKSPACE/.git" ]]; then
+  log_warn "workspace isolation WARNING: workspace=$WORKSPACE contains a .git directory — gov-lsp check will scan the entire repository on every iteration, which is slow and produces irrelevant violations"
+  echo "WARNING: workspace '$WORKSPACE' contains .git — consider passing a clean temp directory" >&2
+fi
 log_info "workspace ready path=$WORKSPACE"
 
 # ---- agent task --------------------------------------------------------------

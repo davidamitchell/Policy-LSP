@@ -175,13 +175,30 @@ log_info "auth token present token_length=${#AUTH_TOKEN}"
 pass "GH_TOKEN is set — copilot CLI headless agent ready"
 
 # ---- workspace isolation (always cleaned up) ---------------------------------
+#
+# Create a clean, isolated temporary directory for this test only.
+# Unset any inherited WORKSPACE env var first — CI environments (GitHub
+# Actions, Jenkins, TeamCity) may pre-set WORKSPACE to the repo root, which
+# would cause gov-lsp check to scan the entire repository instead of the
+# agent's isolated working directory.  Unsetting and recreating it here ensures
+# the governance loop always receives a fresh, empty workspace.
 
-WORKSPACE=$(mktemp -d)
+unset WORKSPACE
+WORKSPACE=$(mktemp -d "${TMPDIR:-/tmp}/headless-test.XXXXXXXXXX")
 trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS"' EXIT
 
-log_info "workspace created path=$WORKSPACE"
+log_info "workspace created (isolated) path=$WORKSPACE"
 echo "Workspace: $WORKSPACE"
 echo ""
+
+# Guard: refuse to run if workspace resolved to the repo root or cwd.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$WORKSPACE" == "$REPO_ROOT" || "$WORKSPACE" == "$(pwd)" ]]; then
+  log_error "workspace isolation failed: WORKSPACE=$WORKSPACE is the repo root or cwd"
+  echo "ERROR: isolated workspace must not be the repository root." >&2
+  exit 1
+fi
+log_debug "workspace isolation guard passed: workspace is not repo root"
 
 # ---- workspace trust ---------------------------------------------------------
 #

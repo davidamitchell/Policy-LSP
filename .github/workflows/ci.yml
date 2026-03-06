@@ -62,10 +62,21 @@ jobs:
         # Requires COPILOT_GITHUB_TOKEN secret exported as GH_TOKEN.  The test fails
         # intentionally in environments where that secret is absent — that is the correct
         # result for an unconfigured headless-agent environment.
+        #
+        # GOV_LSP_POLICIES is given as an absolute path so the governance loop does not
+        # rely on the working directory when resolving policy files.
+        # WORKSPACE is explicitly unset here (and again inside the test script) so the
+        # test's isolated mktemp workspace cannot be overridden by a CI runner that
+        # pre-sets WORKSPACE to the repository root.
         id: agent-test
         env:
           GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-          GOV_LSP_POLICIES: ./policies
+          GOV_LSP_POLICIES: ${{ github.workspace }}/policies
+          # Setting WORKSPACE to the empty string overrides any runner-provided
+          # WORKSPACE env var (e.g., Jenkins sets this to the build dir).
+          # The test script also runs `unset WORKSPACE` before calling mktemp,
+          # so this is a belt-and-suspenders defence against env contamination.
+          WORKSPACE: ""
         run: |
           bash scripts/test_headless_agent.sh /tmp/gov-lsp
         continue-on-error: true
