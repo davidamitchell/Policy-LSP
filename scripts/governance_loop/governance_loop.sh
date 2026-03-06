@@ -52,7 +52,10 @@
 #   WORKSPACE         Workspace directory to govern (default: /tmp/gov_workspace_<pid>)
 #   AGENT_TASK        Agent task prompt (default: contents of prompt.txt or built-in)
 #   MAX_ITER          Maximum correction iterations as safety backstop (default: 10)
-#   LOG_LEVEL         Logging verbosity: debug, info, warn, error (default: debug)
+#   LOG_LEVEL         Logging verbosity: verbose, debug, info, warn, error (default: debug)
+#                     Use verbose to emit the exact prompt, full CLI command, and raw RPC JSON
+#                     to the log.  Use debug for standard diagnostic traces.  Use info or above
+#                     to suppress debug/verbose output (quieter CI runs).
 #   USE_LSP_SIM       Set to 0 to skip LSP simulation and always use batch check
 #
 # Exit codes:
@@ -98,7 +101,29 @@ fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); log_warn "FAIL: $1"; }
 log_info "governance loop starting pid=$$ use_lsp_sim=$USE_LSP_SIM"
 log_debug "binary=$BINARY policies=$POLICIES_DIR max_iter=$MAX_ITER log_level=$LOG_LEVEL"
 
-# ---- preflight: gov-lsp ------------------------------------------------------
+# ---- preflight: workspace isolation (fast-fail before spending time on binaries) ------
+#
+# Validate the WORKSPACE path early so a mis-configured WORKSPACE is caught
+# immediately — before any binary preflights or network calls.  A WORKSPACE
+# that contains .git or that is not under /tmp would cause gov-lsp check to
+# scan the entire repository on every correction iteration.
+
+if [[ -n "$WORKSPACE" ]]; then
+  if [[ -d "$WORKSPACE/.git" ]]; then
+    log_error "workspace isolation FAILED (early check): WORKSPACE=$WORKSPACE contains .git — refusing to run against a repository root"
+    echo "ERROR: WORKSPACE '$WORKSPACE' contains .git — refusing to scan a repository root." >&2
+    echo "       Unset WORKSPACE to let the script create an isolated /tmp directory." >&2
+    exit 1
+  fi
+  if [[ "$WORKSPACE" != /tmp/* ]]; then
+    log_error "workspace isolation FAILED (early check): WORKSPACE=$WORKSPACE is not /tmp-prefixed"
+    echo "ERROR: WORKSPACE '$WORKSPACE' is not under /tmp — isolation is not guaranteed." >&2
+    echo "       Unset WORKSPACE to let the script create an isolated /tmp directory." >&2
+    exit 1
+  fi
+  log_debug "workspace isolation pre-check passed path=$WORKSPACE"
+fi
+
 
 log_debug "preflight: checking gov-lsp binary path=$BINARY"
 if [[ ! -x "$BINARY" ]]; then
@@ -174,11 +199,17 @@ else
 fi
 mkdir -p "$WORKSPACE"
 
-# Guard: warn loudly if the workspace looks like a repository root (contains
-# a .git directory).  This is the most common cause of whole-repo scanning.
+# Belt-and-suspenders: re-validate after mkdir in case the path resolved
+# to something unexpected (e.g., a symlink to the repo root).
 if [[ -d "$WORKSPACE/.git" ]]; then
-  log_warn "workspace isolation WARNING: workspace=$WORKSPACE contains a .git directory — gov-lsp check will scan the entire repository on every iteration, which is slow and produces irrelevant violations"
-  echo "WARNING: workspace '$WORKSPACE' contains .git — consider passing a clean temp directory" >&2
+  log_error "workspace isolation FAILED: WORKSPACE=$WORKSPACE contains .git"
+  echo "ERROR: workspace '$WORKSPACE' contains .git — refusing to scan a repository root." >&2
+  exit 1
+fi
+if [[ "$WORKSPACE" != /tmp/* ]]; then
+  log_error "workspace isolation FAILED: WORKSPACE=$WORKSPACE is not /tmp-prefixed"
+  echo "ERROR: workspace '$WORKSPACE' is not under /tmp — isolation is not guaranteed." >&2
+  exit 1
 fi
 log_info "workspace ready path=$WORKSPACE"
 
@@ -205,41 +236,39 @@ echo ""
 # ---- helpers -----------------------------------------------------------------
 
 # log_agent_output streams the contents of an agent log file to stderr at
-# debug level, line by line.  This makes the agent's full reasoning, tool
-# calls, and output visible in CI logs when LOG_LEVEL=debug (the default).
-# Controlled by the existing LOG_LEVEL idiom — set LOG_LEVEL=info or higher
-# to suppress agent output in the logs.
+# verbose level, line by line.  This makes the agent's full reasoning, tool
+# calls, and output visible in CI logs when LOG_LEVEL=verbose.
+# Controlled by the existing LOG_LEVEL idiom — set LOG_LEVEL=debug or higher
+# to suppress this detailed output.
 log_agent_output() {
   local log_file="$1"
   local label="${2:-agent}"
-  if ! _gov_should_log "debug"; then
+  if ! _gov_should_log "verbose"; then
     return 0
   fi
   if [[ ! -s "$log_file" ]]; then
-    log_debug "agent_output: empty or missing file=$log_file label=$label"
+    log_verbose "agent_output: empty or missing file=$log_file label=$label"
     return 0
   fi
-  log_debug "agent_output: begin label=$label file=$log_file <<<<<"
+  log_verbose "agent_output: begin label=$label file=$log_file <<<<<"
   while IFS= read -r line; do
-    log_debug "[$label] $line"
+    log_verbose "[$label] $line"
   done < "$log_file"
-  log_debug "agent_output: end label=$label >>>>>"
+  log_verbose "agent_output: end label=$label >>>>>"
 }
 
-# log_prompt logs the full content of a prompt string to stderr at debug
+# log_prompt logs the full content of a prompt string to stderr at verbose
 # level, prefixed with a header and footer so it is easy to extract from
-# dense CI log output.  Controlled by LOG_LEVEL (debug = show, info = hide).
+# dense CI log output.  Controlled by LOG_LEVEL (verbose = show, debug = hide).
 log_prompt() {
   local prompt="$1"
   local label="${2:-prompt}"
-  if ! _gov_should_log "debug"; then
+  if ! _gov_should_log "verbose"; then
     return 0
   fi
-  log_debug "prompt_content: begin label=$label bytes=${#prompt} <<<<<"
-  while IFS= read -r line; do
-    log_debug "[$label] $line"
-  done <<< "$prompt"
-  log_debug "prompt_content: end label=$label >>>>>"
+  log_verbose "prompt_content: begin label=$label bytes=${#prompt} <<<<<"
+  log_verbose "Exact prompt: ${prompt}"
+  log_verbose "prompt_content: end label=$label >>>>>"
 }
 
 # LAST_VIOLATIONS holds the JSON array from the most recent diagnostic collection.
@@ -262,8 +291,26 @@ collect_lsp_diagnostics() {
   local ws="$1"
   log_info "collect_lsp_diagnostics: starting LSP simulation workspace=$ws"
 
+  # Pass --verbose to lsp_check.py when LOG_LEVEL=verbose so the full JSON-RPC
+  # protocol trace is captured.  Always capture stderr and relay it through the
+  # shell's log_debug so the trace appears in the CI log alongside other output.
+  local verbose_flag=""
+  if [[ "${LOG_LEVEL:-debug}" == "verbose" ]]; then
+    verbose_flag="--verbose"
+  fi
+
+  local lsp_stderr
+  lsp_stderr=$(mktemp)
   local lsp_output=""
-  lsp_output=$(python3 "$LSP_CHECK_PY" "$BINARY" "$POLICIES_DIR" "$ws" 2>/dev/null) || true
+  lsp_output=$(python3 "$LSP_CHECK_PY" "$BINARY" "$POLICIES_DIR" "$ws" $verbose_flag 2>"$lsp_stderr") || true
+
+  # Relay lsp_check.py's stderr through the shell log at debug level.
+  if [[ -s "$lsp_stderr" ]] && _gov_should_log "debug"; then
+    while IFS= read -r line; do
+      log_debug "[lsp_check] $line"
+    done < "$lsp_stderr"
+  fi
+  rm -f "$lsp_stderr"
 
   if [[ -z "$lsp_output" ]]; then
     log_warn "collect_lsp_diagnostics: no output from lsp_check.py — falling back to batch check"
@@ -526,9 +573,10 @@ AGENT_LOG=$(mktemp /tmp/governance_agent_initial.XXXXXX)
 log_debug "phase1: agent log file=$AGENT_LOG"
 
 # Log the full prompt and the exact dereferenced CLI command before invoking.
-# Controlled by LOG_LEVEL: debug = full detail, info = suppress (default=debug).
+# Use log_verbose so these full-content dumps only appear when LOG_LEVEL=verbose.
 log_prompt "$AGENT_TASK" "phase1/initial"
-log_debug "phase1: copilot command (dereferenced): copilot -p '<see prompt above>' --autopilot --allow-all workspace=$WORKSPACE"
+log_verbose "Exact CLI command: copilot -p '${AGENT_TASK}' --autopilot --allow-all (cwd=${WORKSPACE})"
+log_debug "phase1: copilot invocation workspace=$WORKSPACE"
 
 INITIAL_EXIT=0
 (
@@ -568,6 +616,13 @@ log_info "phase2: starting convergence loop max_iter=$MAX_ITER"
 
 iteration=0
 
+# Stuck-loop detection: hash the violation set each iteration and exit early
+# when it has not changed for STUCK_THRESHOLD consecutive iterations.  This
+# prevents infinite loops when the agent cannot (or does not) fix violations.
+STUCK_THRESHOLD=2
+PREV_VIOLATION_HASH=""
+NO_CHANGE_ITER=0
+
 while [[ $iteration -lt $MAX_ITER ]]; do
   echo "=== Correction iteration $iteration ==="
   log_info "phase2: correction iteration=$iteration"
@@ -579,6 +634,33 @@ while [[ $iteration -lt $MAX_ITER ]]; do
   VIOLATION_COUNT="$LAST_VIOLATION_COUNT"
   echo "Violations: $VIOLATION_COUNT"
   log_info "phase2: violations=$VIOLATION_COUNT iteration=$iteration"
+
+  # Step 1a: stuck-loop detection — fingerprint the violation set and compare to
+  # the previous iteration.  If the fingerprint has not changed for STUCK_THRESHOLD
+  # consecutive iterations the agent is not making progress; exit to avoid burning
+  # LLM budget on an endless loop.
+  # Use sha256sum (GNU coreutils) with a python3 fallback producing the same hex
+  # format so the comparison is always hash-to-hash with the same format.
+  if command -v sha256sum &>/dev/null; then
+    VIOLATION_HASH=$(printf '%s' "$LAST_VIOLATIONS" | sha256sum | cut -d' ' -f1)
+  else
+    VIOLATION_HASH=$(printf '%s' "$LAST_VIOLATIONS" | \
+      python3 -c "import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())")
+  fi
+  if [[ -n "$PREV_VIOLATION_HASH" && "$VIOLATION_HASH" == "$PREV_VIOLATION_HASH" ]]; then
+    NO_CHANGE_ITER=$((NO_CHANGE_ITER + 1))
+    log_warn "phase2: violation set unchanged hash=$VIOLATION_HASH consecutive_no_change=$NO_CHANGE_ITER threshold=$STUCK_THRESHOLD iteration=$iteration"
+    if [[ "$NO_CHANGE_ITER" -ge "$STUCK_THRESHOLD" ]]; then
+      log_error "phase2: stuck-loop detected — violation fingerprint unchanged for $NO_CHANGE_ITER consecutive iteration(s); exiting to avoid infinite loop"
+      # fail() records the failure in FAIL counter (does not exit).
+      # break exits the while loop so the summary section can report correctly.
+      fail "stuck-loop: violation set has not changed for $NO_CHANGE_ITER consecutive iterations (threshold=$STUCK_THRESHOLD)"
+      break
+    fi
+  else
+    NO_CHANGE_ITER=0
+  fi
+  PREV_VIOLATION_HASH="$VIOLATION_HASH"
 
   # Step 2: convergence check — exit when the workspace is clean.
   if [[ "$VIOLATION_COUNT" -eq 0 ]]; then
@@ -644,9 +726,10 @@ finishing."
   log_debug "phase2: correction agent log file=$AGENT_LOG"
 
   # Log the full correction prompt and dereferenced CLI command before invoking.
-  # Controlled by LOG_LEVEL: debug = full detail, info = suppress (default=debug).
+  # Use log_verbose so these full-content dumps only appear when LOG_LEVEL=verbose.
   log_prompt "$PROMPT" "phase2/correction-iter${iteration}"
-  log_debug "phase2: copilot command (dereferenced): copilot -p '<see prompt above>' --autopilot --allow-all workspace=$WORKSPACE iteration=$iteration"
+  log_verbose "Exact CLI command: copilot -p '${PROMPT}' --autopilot --allow-all (cwd=${WORKSPACE} iteration=${iteration})"
+  log_debug "phase2: copilot correction invocation workspace=$WORKSPACE iteration=$iteration"
 
   AGENT_EXIT=0
   (

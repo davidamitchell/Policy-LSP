@@ -54,7 +54,15 @@ jobs:
         # Required for efficient filesystem-change detection in governance_loop.sh.
         # Without this, the script falls back to polling (3s intervals) which is
         # slower and may miss rapid changes during the headless-agent test.
-        run: sudo apt-get install -y inotify-tools
+        run: sudo apt-get install -y inotify-tools bats
+
+      - name: Bats unit tests (governance loop helpers)
+        # Run unit tests for logging helpers, workspace isolation guards, and
+        # lsp_check.py without requiring a live copilot session.
+        env:
+          GOV_LSP_BINARY: /tmp/gov-lsp
+          GOV_LSP_POLICIES_DIR: ${{ github.workspace }}/policies
+        run: bats tests/governance_loop.bats
 
       - name: Install GitHub Copilot CLI
         # Required for the headless agent test.
@@ -74,6 +82,10 @@ jobs:
         # WORKSPACE is explicitly unset here (and again inside the test script) so the
         # test's isolated mktemp workspace cannot be overridden by a CI runner that
         # pre-sets WORKSPACE to the repository root.
+        #
+        # LOG_LEVEL=verbose activates full protocol tracing in the governance loop:
+        # exact prompts, exact CLI commands, raw JSON-RPC request/response pairs, and
+        # the complete agent output are all visible in the CI log for this step.
         id: agent-test
         env:
           GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
@@ -83,6 +95,9 @@ jobs:
           # The test script also runs `unset WORKSPACE` before calling mktemp,
           # so this is a belt-and-suspenders defence against env contamination.
           WORKSPACE: ""
+          # verbose activates full JSON-RPC traces, exact prompt logs, and raw
+          # agent output in the CI log.  Use debug for a less verbose run.
+          LOG_LEVEL: verbose
         run: |
           bash scripts/test_headless_agent.sh /tmp/gov-lsp
         continue-on-error: true
@@ -99,10 +114,11 @@ jobs:
           if-no-files-found: ignore
 
       - name: Policy check (self-governance)
-        # Run gov-lsp check against the whole repo.
-        # This job intentionally exits non-zero on docs/ violations (those are
-        # expected demo violations) but the step is annotated as informational
-        # so it does not block the build. A consumer repo would remove the
-        # || true to make this a hard gate.
+        # Scan only the production Go source directories (cmd/ and internal/).
+        # These contain no intentional violations and must remain clean.
+        # docs/, research/, and policies/ are excluded: they contain .md files
+        # with deliberately non-SCREAMING_SNAKE_CASE names used as demo examples.
+        # Scanning the entire repo root (. ) would report 15+ expected violations
+        # on README.md / CONTRIBUTING.md and defeat workspace isolation.
         run: |
-          GOV_LSP_POLICIES=./policies /tmp/gov-lsp check --format text . || true
+          GOV_LSP_POLICIES=./policies /tmp/gov-lsp check --format text cmd/ internal/
