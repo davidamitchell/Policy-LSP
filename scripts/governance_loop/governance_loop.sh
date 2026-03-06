@@ -207,6 +207,14 @@ echo ""
 # LAST_VIOLATIONS holds the JSON array from the most recent diagnostic collection.
 LAST_VIOLATIONS="[]"
 
+# LAST_VIOLATION_COUNT holds the count from the most recent collect_violations call.
+# This allows callers to invoke collect_violations without a subshell so that
+# LAST_VIOLATIONS is updated in the current shell context.
+LAST_VIOLATION_COUNT=0
+
+# LAST_REMAINING_COUNT holds the count from the most recent auto_apply_rename_fixes call.
+LAST_REMAINING_COUNT=0
+
 # collect_lsp_diagnostics uses lsp_check.py to run a gov-lsp server in the
 # background and simulate textDocument/didOpen events for all workspace files.
 # Captures publishDiagnostics notifications and converts them to the same JSON
@@ -290,6 +298,7 @@ except Exception:
   fi
 
   log_info "collect_violations: complete violations=$count workspace=$ws"
+  LAST_VIOLATION_COUNT="${count:-0}"
   echo "${count:-0}"
 }
 
@@ -383,6 +392,7 @@ print(r)
   fi
 
   log_info "auto_apply: applied=$applied remaining=$remaining_count"
+  LAST_REMAINING_COUNT="$remaining_count"
   echo "$remaining_count"
 }
 
@@ -517,8 +527,10 @@ while [[ $iteration -lt $MAX_ITER ]]; do
   log_info "phase2: correction iteration=$iteration"
 
   # Step 1: collect violations (LSP simulation preferred, batch check fallback).
+  # Call directly (not via $(...)) so LAST_VIOLATIONS is updated in this shell.
   log_debug "phase2: collecting violations path=$WORKSPACE"
-  VIOLATION_COUNT=$(collect_violations "$WORKSPACE")
+  collect_violations "$WORKSPACE" >/dev/null
+  VIOLATION_COUNT="$LAST_VIOLATION_COUNT"
   echo "Violations: $VIOLATION_COUNT"
   log_info "phase2: violations=$VIOLATION_COUNT iteration=$iteration"
 
@@ -530,14 +542,18 @@ while [[ $iteration -lt $MAX_ITER ]]; do
   fi
 
   # Step 3: attempt auto-apply of rename-type fixes before involving the LLM.
+  # Call directly (not via $(...)) so LAST_VIOLATIONS is updated in this shell
+  # to the subset of violations that could not be auto-fixed.
   log_info "phase2: attempting auto-apply of rename fixes violations=$VIOLATION_COUNT iteration=$iteration"
-  REMAINING=$(auto_apply_rename_fixes "$LAST_VIOLATIONS")
+  auto_apply_rename_fixes "$LAST_VIOLATIONS" >/dev/null
+  REMAINING="$LAST_REMAINING_COUNT"
   log_info "phase2: after auto-apply remaining=$REMAINING iteration=$iteration"
 
   # Step 4: re-check after auto-fix to see if we achieved convergence.
   if [[ "$REMAINING" -eq 0 ]]; then
     log_debug "phase2: verifying convergence after auto-apply"
-    RECHECK=$(collect_violations "$WORKSPACE")
+    collect_violations "$WORKSPACE" >/dev/null
+    RECHECK="$LAST_VIOLATION_COUNT"
     if [[ "$RECHECK" -eq 0 ]]; then
       log_info "phase2: auto-apply achieved convergence iteration=$iteration"
       pass "convergence via auto-apply after $iteration iteration(s) — workspace is violation-free"

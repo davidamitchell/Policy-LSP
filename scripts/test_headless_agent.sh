@@ -200,15 +200,6 @@ if [[ "$WORKSPACE" == "$REPO_ROOT" || "$WORKSPACE" == "$(pwd)" ]]; then
 fi
 log_debug "workspace isolation guard passed: workspace is not repo root"
 
-# ---- workspace trust ---------------------------------------------------------
-#
-# Explicitly trust the workspace so the Copilot CLI loads local configs
-# without a security prompt — a common silent failure point in headless CI.
-
-log_debug "workspace: running copilot --trust"
-copilot --trust "$WORKSPACE"
-log_info "workspace trusted path=$WORKSPACE"
-
 # ---- agent task: run governance loop with the task ---------------------------
 #
 # The governance loop is the headless agent.  It:

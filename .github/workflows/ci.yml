@@ -50,6 +50,12 @@ jobs:
         run: |
           GOV_LSP_POLICIES=./policies bash scripts/test_policy_gate.sh /tmp/gov-lsp
 
+      - name: Install inotify-tools
+        # Required for efficient filesystem-change detection in governance_loop.sh.
+        # Without this, the script falls back to polling (3s intervals) which is
+        # slower and may miss rapid changes during the headless-agent test.
+        run: sudo apt-get install -y inotify-tools
+
       - name: Install GitHub Copilot CLI
         # Required for the headless agent test.
         # Pattern from https://github.com/davidamitchell/Research/blob/main/.github/workflows/research-loop.yml
