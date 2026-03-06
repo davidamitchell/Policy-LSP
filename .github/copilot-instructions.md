@@ -18,7 +18,7 @@ An IDE-free agent has no LSP client, no inline feedback, and no natural guardrai
 
 **What "enforcement works" means:** An agent given governance tools as part of its environment catches its own policy violations and self-corrects — before the violating file persists. The test for this is the outcome: the policy-violating file must not exist when the agent finishes. If it does exist, enforcement failed.
 
-**Success Metrics for Code Quality:** All features must converge in tests (e.g., governance loops must reach zero violations within a small, bounded number of iterations — not spiral endlessly). Basic errors like undefined flags, missing dependencies, or misleading outputs indicate a failure in problem-solving — anticipate and test for them upfront.
+**Success Metrics for Code Quality:** All features must converge in tests (e.g., governance loops must reach zero violations within a small, bounded number of iterations — typically 5 or fewer for any real workspace — not spiral endlessly). Basic errors like undefined flags, missing dependencies, or misleading outputs indicate a failure in problem-solving — anticipate and test for them upfront.
 
 The two core concerns of this repo are intentionally separate:
 
@@ -159,6 +159,17 @@ When generating or fixing code:
 - **Reproduce errors first:** For failing tests or scripts, run with verbose flags (`bash -x script.sh`, `go test -v ./...`) and read the full output before changing anything.
 - **Validate outputs explicitly:** After a change, verify the result directly (e.g., `ls notes.md` must fail, `go test ./...` must pass). Update `PROGRESS.md` with findings.
 - **Prompt engineering for agent loops:** Use imperative language, chain-of-thought steps, and few-shot examples. Include a fallback action for every conditional branch.
+
+---
+
+## Confirmed Behaviors and Known Facts
+
+These are empirically confirmed findings that agents must not re-investigate without new evidence:
+
+- **Copilot CLI `--autopilot` mode does NOT start gov-lsp.** Confirmed 2026-03-05 (W-0034). The `lspServers` config in `.github/lsp.json` is interactive-session-only. In `--autopilot` mode the LSP server is never launched. Do not rely on LSP diagnostics reaching a Copilot agent running in autopilot; use the MCP tool path instead.
+- **Canonical headless invocation:** `copilot -p "PROMPT" --autopilot --allow-all` with `GH_TOKEN` env var. Install via `npm install -g @github/copilot`.
+- **Governance loop location:** The canonical loop is `scripts/governance_loop/governance_loop.sh`. `scripts/governance_loop.sh` is a compatibility shim. LSP simulation uses `scripts/governance_loop/lsp_check.py`. Set `USE_LSP_SIM=0` to force batch-check mode.
+- **Logging:** All Go layers use `slog` (debug default). Shell scripts source `scripts/lib/logging.sh` for `log_debug`/`info`/`warn`/`error` with ISO timestamps. `LOG_LEVEL` env var controls both Go (`--log-level` flag) and shell verbosity.
 
 ---
 
