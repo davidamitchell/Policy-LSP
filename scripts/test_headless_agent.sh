@@ -1,37 +1,41 @@
 #!/usr/bin/env bash
-# test_headless_agent.sh — Headless Copilot CLI enforcement integration test.
+# test_headless_agent.sh — Headless governance loop integration test.
 #
 # What this test proves
 # ---------------------
-# The GitHub Copilot CLI (the `copilot` binary) is a headless agent: it operates
-# without an IDE, without an LSP client, and without inline feedback.  GOV-LSP
-# is the enforcement layer that provides the rails.
+# The governance loop (scripts/governance_loop.sh) is a policy-enforced agent
+# orchestrator: it runs the Copilot CLI to execute a task, detects any policy
+# violations the agent leaves behind, and re-runs the agent with structured
+# violation context until the workspace is clean.
 #
 # This test proves the FRAMEWORK works by proving the OUTCOME:
 #
 #   The agent is given a task that would naturally produce a policy-violating
 #   file (my-notes.md = lowercase with hyphen, violates SCREAMING_SNAKE_CASE).
-#   The agent runs inside a workspace where gov-lsp is registered as its
-#   Language Server via .github/lsp.json.  After running, the policy-violating
-#   file must NOT exist — because the agent caught the violation through the LSP
-#   diagnostics and self-corrected before completing.
+#   The governance loop runs the agent, then evaluates the workspace with
+#   gov-lsp check --format json.  If violations are found, the loop re-runs
+#   the agent with structured violation data (file, id, message, fix) injected
+#   into the prompt until the workspace is violation-free.
 #
 #   IF my-notes.md EXISTS AT THE END = ENFORCEMENT FAILED = TEST FAILS.
 #
-# The enforcement does NOT happen in this test script.  It happens inside the
-# agent's own session, via the gov-lsp Language Server registered in the
-# workspace's .github/lsp.json.  When the agent creates or opens a file, gov-lsp
-# sends textDocument/publishDiagnostics events to the Copilot CLI, exactly as
-# an IDE would display inline squiggles — the agent receives them and self-corrects.
+# The enforcement happens inside governance_loop.sh.  The test script only
+# asserts the outcome: was the workspace left in a compliant state?
 #
-# This is the native, highest-fidelity integration path: the Copilot CLI reads
-# .github/lsp.json at startup and connects to declared LSP servers.  No external
-# check command, no MCP workaround — just the LSP protocol doing its job.
+# Enforcement mechanism
+# ---------------------
+# governance_loop.sh enforces policy by:
+#   1. Running the agent with the original task (copilot CLI)
+#   2. Evaluating the workspace with: gov-lsp check --format json
+#   3. If violations found, injecting structured violation JSON into the next
+#      agent prompt alongside a human-readable summary
+#   4. Repeating until the workspace is violation-free (convergence) or the
+#      MAX_ITER correction rounds are exhausted
 #
 # The filename policy (SCREAMING_SNAKE_CASE for .md files) is an example policy.
 # The goal is not to test that specific rule — the goal is to prove the framework
-# pattern: give any headless agent a governance Language Server, and violations
-# get caught before the agent's work lands.
+# pattern: give any headless agent a governance loop, and violations get caught
+# and corrected before the agent's work lands.
 #
 # Prerequisites — this test FAILS if either is absent
 # ----------------------------------------------------
@@ -45,54 +49,32 @@
 # of the test.  If the test fails because copilot is not authenticated, that is
 # the correct and expected result for an unconfigured environment.
 #
-# Headless invocation
-# -------------------
-# Modelled on https://github.com/davidamitchell/Research/blob/main/.github/workflows/research-loop.yml
-# The Copilot CLI is invoked with:
-#   -p PROMPT     execute a prompt and exit (no interactive session)
-#   --autopilot   enable autonomous continuation without prompting
-#   --allow-all   allow all tools, paths, and URLs automatically
-#
-# LSP enforcement
-# ---------------
-# gov-lsp is registered as a Language Server in the workspace's .github/lsp.json
-# using the lspServers schema the Copilot CLI reads at startup:
-#
-#   {
-#     "lspServers": {
-#       "gov-lsp": {
-#         "command": "<absolute-path-to-binary>",
-#         "args": ["-policies", "<absolute-path-to-policies>"],
-#         "fileExtensions": { ".md": "markdown", ... }
-#       }
-#     }
-#   }
-#
-# The Copilot CLI connects to gov-lsp via the LSP stdio protocol.  When the agent
-# creates or edits a file, gov-lsp evaluates it and pushes diagnostics back through
-# textDocument/publishDiagnostics.  The agent sees the violations inline — no
-# explicit tool call required — and self-corrects.
-#
-# Authentication: the copilot binary reads GH_TOKEN (or GITHUB_TOKEN) from
-# the environment, which is the pattern used in the Research repo CI workflow.
-#
-# Cleanup
-# -------
-# A temp workspace is created at the start.  EXIT trap removes it unconditionally.
-#
 # Usage
 # -----
 #   GH_TOKEN=<token> bash scripts/test_headless_agent.sh [path-to-gov-lsp]
 #
 # Environment
 # -----------
-#   GH_TOKEN           GitHub token for the copilot CLI (see Research loop pattern)
+#   GH_TOKEN           GitHub token for the copilot CLI
 #   GITHUB_TOKEN       Fallback auth token
 #   GOV_LSP_POLICIES   Directory containing .rego files (default: ./policies)
+#   LOG_LEVEL          Logging verbosity: debug, info, warn, error (default: debug)
 
 set -uo pipefail
 
+# ---- logging -----------------------------------------------------------------
+#
+# Structured log helpers: log_debug, log_info, log_warn, log_error.
+# Sourced from scripts/lib/logging.sh to keep implementations in sync.
+# LOG_LEVEL controls verbosity (debug > info > warn > error, default: debug).
+
+LOG_NAME="test_headless_agent"
+# shellcheck source=lib/logging.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/logging.sh"
+
 # ---- paths and environment ---------------------------------------------------
+
+log_info "test starting pid=$$"
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <path-to-gov-lsp-binary>" >&2
@@ -102,43 +84,61 @@ fi
 
 BINARY_PATH="$(realpath "$1")"
 POLICIES_DIR="$(realpath "${GOV_LSP_POLICIES:-./policies}")"
-# Resolve template path relative to the script's location so the script can be
+# Resolve script paths relative to this file's location so the test can be
 # invoked from any working directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE_PATH="$SCRIPT_DIR/../.github/lsp-template.json"
+GOVERNANCE_LOOP="$SCRIPT_DIR/governance_loop/governance_loop.sh"
 AGENT_LOGS="$(mktemp /tmp/agent_logs.XXXXXX)"
 # Export log path so the CI workflow can locate it for artifact upload.
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "agent_logs=$AGENT_LOGS" >> "$GITHUB_OUTPUT"
 fi
 
+log_debug "binary=$BINARY_PATH policies=$POLICIES_DIR"
+log_debug "governance_loop=$GOVERNANCE_LOOP"
+log_debug "agent_logs=$AGENT_LOGS"
+
 PASS=0
 FAIL=0
 
-pass() { echo "PASS: $1"; PASS=$((PASS+1)); }
-fail() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
+pass() { echo "PASS: $1"; PASS=$((PASS+1)); log_info "PASS: $1"; }
+fail() { echo "FAIL: $1"; FAIL=$((FAIL+1)); log_warn "FAIL: $1"; }
 
 # ---- preflight: gov-lsp ------------------------------------------------------
 
+log_debug "preflight: checking gov-lsp binary"
 if [[ ! -x "$BINARY_PATH" ]]; then
+  log_error "gov-lsp binary not found: $BINARY_PATH"
   echo "ERROR: gov-lsp binary not found or not executable: $BINARY_PATH" >&2
   echo "       Build with: go build -o gov-lsp ./cmd/gov-lsp" >&2
   exit 1
 fi
 
+GOV_LSP_VERSION=$("$BINARY_PATH" --version 2>&1 || true)
+log_info "gov-lsp binary OK version=\"$GOV_LSP_VERSION\" path=$BINARY_PATH"
+
+log_debug "preflight: checking policies directory"
 if [[ ! -d "$POLICIES_DIR" ]]; then
+  log_error "policies directory not found: $POLICIES_DIR"
   echo "ERROR: policies directory not found: $POLICIES_DIR" >&2
   exit 1
 fi
+POLICY_COUNT=$(find "$POLICIES_DIR" -maxdepth 1 -name "*.rego" 2>/dev/null | wc -l | tr -d ' ')
+log_info "policies directory OK count=$POLICY_COUNT dir=$POLICIES_DIR"
 
-if [[ ! -f "$TEMPLATE_PATH" ]]; then
-  echo "ERROR: LSP template not found: $TEMPLATE_PATH" >&2
+log_debug "preflight: checking governance_loop.sh"
+if [[ ! -f "$GOVERNANCE_LOOP" ]]; then
+  log_error "governance loop script not found: $GOVERNANCE_LOOP"
+  echo "ERROR: governance loop script not found: $GOVERNANCE_LOOP" >&2
   exit 1
 fi
+log_info "governance_loop.sh found (canonical path) path=$GOVERNANCE_LOOP"
 
 # ---- preflight: Copilot CLI installation -------------------------------------
 
+log_debug "preflight: checking copilot CLI"
 if ! command -v copilot >/dev/null 2>&1; then
+  log_error "copilot CLI not installed"
   echo "ERROR: copilot CLI not installed." >&2
   echo "       Install with: npm install -g @github/copilot" >&2
   exit 1
@@ -149,6 +149,9 @@ copilot --version 2>&1
 echo "--- end copilot version ---"
 echo ""
 
+COPILOT_VERSION=$(copilot --version 2>&1 || true)
+log_info "copilot CLI OK version=\"$COPILOT_VERSION\""
+
 # ---- preflight: authentication -----------------------------------------------
 #
 # The copilot CLI reads GH_TOKEN or GITHUB_TOKEN from the environment.
@@ -157,115 +160,123 @@ echo ""
 # The test fails here — not skips — because an unauthenticated environment is an
 # unconfigured environment, not a passing one.
 
+log_debug "preflight: checking authentication"
 AUTH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 
 if [[ -z "$AUTH_TOKEN" ]]; then
+  log_error "no auth token: set GH_TOKEN or GITHUB_TOKEN"
   echo "ERROR: copilot CLI is not authenticated." >&2
   echo "       Set GH_TOKEN (a GitHub PAT with Copilot access)." >&2
   echo "       In CI: add COPILOT_GITHUB_TOKEN to repository secrets and export as GH_TOKEN." >&2
   exit 1
 fi
 
+log_info "auth token present token_length=${#AUTH_TOKEN}"
 pass "GH_TOKEN is set — copilot CLI headless agent ready"
 
 # ---- workspace isolation (always cleaned up) ---------------------------------
+#
+# Create a clean, isolated temporary directory for this test only.
+# Unset any inherited WORKSPACE env var first — CI environments (GitHub
+# Actions, Jenkins, TeamCity) may pre-set WORKSPACE to the repo root, which
+# would cause gov-lsp check to scan the entire repository instead of the
+# agent's isolated working directory.  Unsetting and recreating it here ensures
+# the governance loop always receives a fresh, empty workspace.
 
-WORKSPACE=$(mktemp -d)
+unset WORKSPACE
+WORKSPACE=$(mktemp -d "${TMPDIR:-/tmp}/headless-test.XXXXXXXXXX")
 trap 'rm -rf "$WORKSPACE" "$AGENT_LOGS"' EXIT
 
+log_info "workspace created (isolated) path=$WORKSPACE"
 echo "Workspace: $WORKSPACE"
 echo ""
 
-# ---- dynamic LSP config injection --------------------------------------------
-#
-# Replaces placeholders in the template with absolute paths and writes the
-# result into the isolated workspace.  The Copilot CLI reads .github/lsp.json
-# at startup; absolute paths ensure the binary and policies are found regardless
-# of the working directory the CLI uses internally.
-
-mkdir -p "$WORKSPACE/.github"
-# Guard against paths containing the sed delimiter. Pipes are technically valid
-# in Linux paths but would silently corrupt the JSON substitution.
-if [[ "$BINARY_PATH" == *'|'* ]] || [[ "$POLICIES_DIR" == *'|'* ]]; then
-  echo "ERROR: path contains '|' which breaks sed substitution" >&2
+# Guard: refuse to run if workspace resolved to the repo root or cwd.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$WORKSPACE" == "$REPO_ROOT" || "$WORKSPACE" == "$(pwd)" ]]; then
+  log_error "workspace isolation failed: WORKSPACE=$WORKSPACE is the repo root or cwd"
+  echo "ERROR: isolated workspace must not be the repository root." >&2
   exit 1
 fi
-sed -e "s|GOV_LSP_BINARY|$BINARY_PATH|g" \
-    -e "s|GOV_LSP_POLICIES|$POLICIES_DIR|g" \
-    "$TEMPLATE_PATH" > "$WORKSPACE/.github/lsp.json"
-
-echo "--- workspace LSP config ---"
-cat "$WORKSPACE/.github/lsp.json"
-echo "--- end LSP config ---"
-echo ""
+log_debug "workspace isolation guard passed: workspace is not repo root"
 
 # ---- workspace trust ---------------------------------------------------------
 #
-# Explicitly trust the workspace so the Copilot CLI loads the local lsp.json
+# Explicitly trust the workspace so the Copilot CLI loads local configs
 # without a security prompt — a common silent failure point in headless CI.
 
+log_debug "workspace: running copilot --trust"
 copilot --trust "$WORKSPACE"
+log_info "workspace trusted path=$WORKSPACE"
 
-# ---- agent task: create a notes file with governance LSP active --------------
+# ---- agent task: run governance loop with the task ---------------------------
 #
-# The agent is asked to create my-notes.md.  That name violates the
-# SCREAMING_SNAKE_CASE policy.  The agent runs inside a workspace where gov-lsp
-# is registered as the Language Server.  The Copilot CLI connects to gov-lsp at
-# startup; when the agent creates my-notes.md, gov-lsp pushes the
-# markdown-naming-violation diagnostic inline.  The enforcement happens through
-# the native LSP protocol — not from a check run externally by this script.
+# The governance loop is the headless agent.  It:
+#   1. Runs the Copilot CLI with the task prompt (may create my-notes.md)
+#   2. Evaluates the workspace with gov-lsp check --format json
+#   3. If violations exist, re-runs the agent with structured violation context
+#   4. Repeats until the workspace is violation-free (convergence)
 #
-# --debug captures LSP JSON-RPC traffic and agent reasoning for post-mortem
-# analysis when the test fails.
+# The enforcement happens inside governance_loop.sh, not in this test script.
 
-echo "=== Copilot CLI agent task (with gov-lsp as native Language Server, debug enabled) ==="
+echo "=== governance_loop.sh agent task ==="
+log_info "agent task: invoking governance_loop.sh task='Create a md file called my-notes.md'"
+log_debug "governance loop env: GOV_LSP_POLICIES=$POLICIES_DIR WORKSPACE=$WORKSPACE binary=$BINARY_PATH"
+
 AGENT_EXIT=0
-(
-  cd "$WORKSPACE"
-  copilot \
-    -p "Create a md file called my-notes.md" \
-    --autopilot \
-    --allow-all \
-    --debug > "$AGENT_LOGS" 2>&1
-) || AGENT_EXIT=$?
+GOV_LSP_POLICIES="$POLICIES_DIR" \
+WORKSPACE="$WORKSPACE" \
+LOG_LEVEL="$LOG_LEVEL" \
+AGENT_TASK="Create a md file called my-notes.md" \
+  bash "$GOVERNANCE_LOOP" "$BINARY_PATH" > "$AGENT_LOGS" 2>&1 || AGENT_EXIT=$?
 echo "=== end agent task (exit $AGENT_EXIT) ==="
+log_info "governance loop completed exit_code=$AGENT_EXIT logs=$AGENT_LOGS"
 echo ""
 
 # ---- assertion: enforcement outcome ------------------------------------------
 #
-# The only assertion that matters: did the agent leave a policy-violating file?
+# The only assertion that matters: did the governance loop leave a
+# policy-violating file in the workspace?
 #
-# my-notes.md EXISTS   → enforcement failed — the agent created a violating file
-#                        and the governance LSP did not catch it.  FAIL.
+# my-notes.md EXISTS   → enforcement failed — the governance loop did not
+#                        correct the violation before exiting.  FAIL.
 #
-# my-notes.md ABSENT   → enforcement worked — the agent received LSP diagnostics
-#                        and self-corrected before completing.  PASS.
+# my-notes.md ABSENT   → enforcement worked — the governance loop detected
+#                        the violation and the agent self-corrected.  PASS.
 
 echo "--- workspace contents ---"
 ls -la "$WORKSPACE/" 2>&1
 echo "--- end workspace contents ---"
 echo ""
 
+log_debug "assertion: checking workspace for policy violations"
+log_debug "assertion: checking for my-notes.md (must NOT exist)"
+
 if [[ $AGENT_EXIT -ne 0 ]] || [[ -f "$WORKSPACE/my-notes.md" ]]; then
-  echo "--- AGENT DEBUG LOGS ---"
+  echo "--- GOVERNANCE LOOP LOGS ---"
   cat "$AGENT_LOGS"
-  echo "--- END DEBUG LOGS ---"
+  echo "--- END LOGS ---"
   echo ""
 
   if [[ $AGENT_EXIT -ne 0 ]]; then
-    fail "agent process exited with error $AGENT_EXIT"
+    log_warn "assertion: governance loop exited with error exit_code=$AGENT_EXIT"
+    fail "governance loop exited with error $AGENT_EXIT"
   fi
   if [[ -f "$WORKSPACE/my-notes.md" ]]; then
-    fail "enforcement FAILED: agent created my-notes.md (policy-violating file exists)"
-    echo "     The governance LSP did not prevent the violation." >&2
+    log_error "assertion: FAILED — my-notes.md exists after governance loop completed (enforcement did not converge)"
+    fail "enforcement FAILED: my-notes.md exists after governance loop completed"
+    echo "     The governance loop did not correct the violation." >&2
   fi
 else
-  pass "enforcement PASSED: my-notes.md was not created (agent self-corrected via LSP diagnostics)"
+  log_info "assertion: PASSED — my-notes.md absent (enforcement converged)"
+  pass "enforcement PASSED: my-notes.md was not present after governance loop converged"
 fi
 
 if [[ -f "$WORKSPACE/MY-NOTES.md" ]]; then
+  log_info "assertion: agent self-corrected — MY-NOTES.md exists (compliant filename)"
   pass "agent self-corrected: created MY-NOTES.md (compliant filename)"
 else
+  log_debug "assertion: MY-NOTES.md not found — agent may have been blocked or used different name"
   echo "INFO: MY-NOTES.md not found — agent may have been blocked entirely or used a different name"
 fi
 
@@ -275,11 +286,13 @@ echo ""
 echo "Results: $PASS passed, $FAIL failed"
 echo ""
 if [[ "$FAIL" -eq 0 ]]; then
-  echo "Framework proof: a headless Copilot CLI agent operating with gov-lsp"
-  echo "as its native Language Server self-corrected a policy violation — the rails are working."
+  log_info "summary: TEST PASSED pass=$PASS fail=$FAIL"
+  echo "Framework proof: the governance loop orchestrated a headless Copilot CLI"
+  echo "agent and enforced policy compliance — violations were corrected before the loop exited."
 else
-  echo "Framework BROKEN: the governance LSP framework did not prevent"
-  echo "a policy-violating file from being created by the headless agent."
+  log_warn "summary: TEST FAILED pass=$PASS fail=$FAIL"
+  echo "Framework BROKEN: the governance loop did not correct"
+  echo "a policy-violating file created by the headless agent."
 fi
 
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

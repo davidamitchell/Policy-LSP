@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +48,10 @@ func New(fsys fs.FS) (*Engine, error) {
 		}
 		src, err := fs.ReadFile(fsys, path)
 		if err != nil {
+			slog.Debug("engine: skipping unreadable policy file", "path", path, "err", err)
 			return err
 		}
+		slog.Debug("engine: loaded policy file", "name", filepath.Base(path), "bytes", len(src))
 		modules[filepath.Base(path)] = string(src)
 		return nil
 	}); err != nil {
@@ -58,6 +61,8 @@ func New(fsys fs.FS) (*Engine, error) {
 	if len(modules) == 0 {
 		return nil, fmt.Errorf("no .rego files found")
 	}
+
+	slog.Debug("engine: preparing query", "policies", len(modules))
 
 	opts := []func(*rego.Rego){
 		rego.Query("data.governance[_].deny"),
@@ -71,11 +76,13 @@ func New(fsys fs.FS) (*Engine, error) {
 		return nil, fmt.Errorf("preparing query: %w", err)
 	}
 
+	slog.Info("engine: policies ready", "count", len(modules))
 	return &Engine{query: pq}, nil
 }
 
 // NewFromDir creates an Engine by loading all .rego files from policyDir on disk.
 func NewFromDir(policyDir string) (*Engine, error) {
+	slog.Debug("engine: loading policies from directory", "dir", policyDir)
 	info, err := os.Stat(policyDir)
 	if err != nil {
 		return nil, fmt.Errorf("loading policies from %s: %w", policyDir, err)
@@ -89,6 +96,8 @@ func NewFromDir(policyDir string) (*Engine, error) {
 // Evaluate runs all loaded policies against the given input and returns the
 // aggregated list of violations.
 func (e *Engine) Evaluate(ctx context.Context, in Input) ([]Violation, error) {
+	slog.Debug("engine: evaluating", "filename", in.Filename, "path", in.Path, "ext", in.Extension)
+
 	inputMap := map[string]interface{}{
 		"filename":      in.Filename,
 		"extension":     in.Extension,
@@ -98,6 +107,7 @@ func (e *Engine) Evaluate(ctx context.Context, in Input) ([]Violation, error) {
 
 	rs, err := e.query.Eval(ctx, rego.EvalInput(inputMap))
 	if err != nil {
+		slog.Warn("engine: evaluation error", "filename", in.Filename, "err", err)
 		return nil, fmt.Errorf("evaluating policies: %w", err)
 	}
 
@@ -111,12 +121,15 @@ func (e *Engine) Evaluate(ctx context.Context, in Input) ([]Violation, error) {
 			for _, item := range set {
 				v, err := toViolation(item)
 				if err != nil {
+					slog.Debug("engine: skipping malformed violation", "err", err)
 					continue
 				}
 				violations = append(violations, v)
 			}
 		}
 	}
+
+	slog.Debug("engine: evaluation complete", "filename", in.Filename, "violations", len(violations))
 	return violations, nil
 }
 

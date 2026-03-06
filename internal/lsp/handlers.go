@@ -5,6 +5,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -181,10 +182,12 @@ func NewHandler(eng *engine.Engine, pub Publisher) *Handler {
 
 // Handle dispatches an incoming request to the correct sub-handler.
 func (h *Handler) Handle(ctx context.Context, req *Request) *Response {
+	slog.Debug("lsp: received", "method", req.Method, "id", req.ID)
 	switch req.Method {
 	case "initialize":
 		return h.handleInitialize(req)
 	case "initialized":
+		slog.Debug("lsp: initialized notification received")
 		return nil // notification, no response needed
 	case "textDocument/didOpen":
 		h.handleDidOpen(ctx, req)
@@ -195,53 +198,70 @@ func (h *Handler) Handle(ctx context.Context, req *Request) *Response {
 	case "textDocument/codeAction":
 		return h.handleCodeAction(req)
 	case "shutdown":
+		slog.Info("lsp: shutdown received")
 		return &Response{JSONRPC: "2.0", ID: req.ID, Result: nil}
 	case "exit":
+		slog.Info("lsp: exit received")
 		return nil
 	default:
 		if req.ID != nil {
+			slog.Debug("lsp: unknown method", "method", req.Method)
 			return &Response{
 				JSONRPC: "2.0",
 				ID:      req.ID,
 				Error:   &RPCError{Code: -32601, Message: "method not found"},
 			}
 		}
+		slog.Debug("lsp: unknown notification (ignored)", "method", req.Method)
 		return nil
 	}
 }
 
 func (h *Handler) handleInitialize(req *Request) *Response {
+	var params InitializeParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		slog.Debug("lsp: initialize params unreadable (ignored)", "err", err)
+	} else {
+		slog.Info("lsp: initialize", "rootUri", params.RootURI)
+	}
 	result := InitializeResult{
 		Capabilities: ServerCapabilities{
 			TextDocumentSync:   1, // Full sync
 			CodeActionProvider: true,
 		},
 	}
+	slog.Debug("lsp: initialize response sent", "textDocumentSync", result.Capabilities.TextDocumentSync, "codeActionProvider", result.Capabilities.CodeActionProvider)
 	return &Response{JSONRPC: "2.0", ID: req.ID, Result: result}
 }
 
 func (h *Handler) handleDidOpen(ctx context.Context, req *Request) {
 	var params DidOpenParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
+		slog.Warn("lsp: didOpen parse error", "err", err)
 		return
 	}
+	slog.Debug("lsp: didOpen", "uri", params.TextDocument.URI, "languageId", params.TextDocument.LanguageID, "version", params.TextDocument.Version)
 	h.evaluateAndPublish(ctx, params.TextDocument.URI, params.TextDocument.Text)
 }
 
 func (h *Handler) handleDidChange(ctx context.Context, req *Request) {
 	var params DidChangeParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
+		slog.Warn("lsp: didChange parse error", "err", err)
 		return
 	}
 	if len(params.ContentChanges) == 0 {
+		slog.Debug("lsp: didChange has no content changes (ignored)", "uri", params.TextDocument.URI)
 		return
 	}
 	text := params.ContentChanges[len(params.ContentChanges)-1].Text
 	uri := params.TextDocument.URI
+	slog.Debug("lsp: didChange", "uri", uri, "version", params.TextDocument.Version, "changes", len(params.ContentChanges))
 
 	h.debounceMu.Lock()
 	if t, ok := h.debounce[uri]; ok {
 		t.Stop()
+		slog.Debug("lsp: debounce reset", "uri", uri)
 	}
 	h.debounce[uri] = time.AfterFunc(200*time.Millisecond, func() {
 		h.evaluateAndPublish(ctx, uri, text)
@@ -256,6 +276,7 @@ func (h *Handler) handleDidChange(ctx context.Context, req *Request) {
 func (h *Handler) evaluateAndPublish(ctx context.Context, uri, text string) {
 	filename := filenameFromURI(uri)
 	ext := filepath.Ext(filename)
+	slog.Debug("lsp: evaluating document", "uri", uri, "filename", filename, "ext", ext)
 
 	in := engine.Input{
 		Filename:     filename,
@@ -266,6 +287,7 @@ func (h *Handler) evaluateAndPublish(ctx context.Context, uri, text string) {
 
 	violations, err := h.eng.Evaluate(ctx, in)
 	if err != nil {
+		slog.Warn("lsp: evaluation error", "uri", uri, "err", err)
 		return
 	}
 
@@ -275,6 +297,7 @@ func (h *Handler) evaluateAndPublish(ctx context.Context, uri, text string) {
 		diags = append(diags, d)
 	}
 
+	slog.Debug("lsp: publishing diagnostics", "uri", uri, "count", len(diags))
 	h.publish(Notification{
 		JSONRPC: "2.0",
 		Method:  "textDocument/publishDiagnostics",
@@ -347,8 +370,10 @@ func filenameFromURI(uri string) string {
 func (h *Handler) handleCodeAction(req *Request) *Response {
 	var params CodeActionParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
+		slog.Warn("lsp: codeAction parse error", "err", err)
 		return &Response{JSONRPC: "2.0", ID: req.ID, Result: []CodeAction{}}
 	}
+	slog.Debug("lsp: codeAction", "uri", params.TextDocument.URI, "diagnostics", len(params.Context.Diagnostics))
 
 	actions := make([]CodeAction, 0)
 	for _, diag := range params.Context.Diagnostics {
@@ -364,6 +389,7 @@ func (h *Handler) handleCodeAction(req *Request) *Response {
 
 		oldURI := params.TextDocument.URI
 		newURI := renameURIFilename(oldURI, fixValue)
+		slog.Debug("lsp: code action: rename", "from", oldURI, "to", newURI)
 
 		actions = append(actions, CodeAction{
 			Title:       "Rename to " + fixValue,
@@ -377,6 +403,7 @@ func (h *Handler) handleCodeAction(req *Request) *Response {
 		})
 	}
 
+	slog.Debug("lsp: codeAction response", "actions", len(actions))
 	return &Response{JSONRPC: "2.0", ID: req.ID, Result: actions}
 }
 

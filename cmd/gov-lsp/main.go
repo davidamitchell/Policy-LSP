@@ -68,6 +68,7 @@ func checkMain(args []string) int {
 	checkFlags := flag.NewFlagSet("check", flag.ContinueOnError)
 	policiesDir := checkFlags.String("policies", defaultPoliciesDir(), "directory containing .rego policy files")
 	format := checkFlags.String("format", "text", "output format: text or json")
+	logLevel := checkFlags.String("log-level", "debug", "log level: debug, info, warn, error")
 
 	if err := checkFlags.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "gov-lsp check: %v\n", err)
@@ -78,10 +79,19 @@ func checkMain(args []string) int {
 		*policiesDir = env
 	}
 
+	// Configure structured logging to stderr for the check subcommand.
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	slog.Debug("gov-lsp check: starting", "policies", *policiesDir, "format", *format, "log-level", *logLevel)
+
 	paths := checkFlags.Args()
 	if len(paths) == 0 {
 		paths = []string{"."}
 	}
+	slog.Debug("gov-lsp check: paths", "paths", paths)
 
 	eng, err := engine.NewFromDir(*policiesDir)
 	if err != nil {
@@ -94,6 +104,7 @@ func checkMain(args []string) int {
 		fmt.Fprintf(os.Stderr, "gov-lsp check: %v\n", err)
 		return 1
 	}
+	slog.Debug("gov-lsp check: complete", "violations", count)
 	if count > 0 {
 		return 1
 	}
@@ -104,10 +115,11 @@ func checkMain(args []string) int {
 // It returns the total number of violations found.
 func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (int, error) {
 	ctx := context.Background()
-	var results []CheckResult
+	results := make([]CheckResult, 0)
 	checked := 0
 
 	for _, root := range paths {
+		slog.Debug("gov-lsp check: walking", "root", root)
 		if err := filepath.WalkDir(root, func(path string, d iofs.DirEntry, err error) error {
 			if err != nil {
 				return nil // skip unreadable entries
@@ -115,6 +127,7 @@ func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (i
 			if d.IsDir() {
 				// Skip hidden directories such as .git and .github.
 				if strings.HasPrefix(filepath.Base(path), ".") && path != root {
+					slog.Debug("gov-lsp check: skipping hidden dir", "path", path)
 					return filepath.SkipDir
 				}
 				return nil
@@ -122,11 +135,13 @@ func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (i
 
 			content, readErr := os.ReadFile(path)
 			if readErr != nil {
+				slog.Debug("gov-lsp check: skipping unreadable file", "path", path, "err", readErr)
 				return nil // skip unreadable files
 			}
 
 			filename := filepath.Base(path)
 			ext := filepath.Ext(filename)
+			slog.Debug("gov-lsp check: evaluating file", "path", path, "filename", filename, "ext", ext)
 
 			in := engine.Input{
 				Filename:     filename,
@@ -137,10 +152,14 @@ func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (i
 
 			violations, evalErr := eng.Evaluate(ctx, in)
 			if evalErr != nil {
+				slog.Warn("gov-lsp check: evaluation error (skipped)", "path", path, "err", evalErr)
 				return nil // log and continue; don't abort the walk
 			}
 
 			checked++
+			if len(violations) > 0 {
+				slog.Debug("gov-lsp check: violations found", "path", path, "count", len(violations))
+			}
 			for _, v := range violations {
 				results = append(results, CheckResult{
 					File:    path,
@@ -155,6 +174,8 @@ func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (i
 			return len(results), fmt.Errorf("walking %s: %w", root, err)
 		}
 	}
+
+	slog.Debug("gov-lsp check: walk complete", "files_checked", checked, "violations", len(results))
 
 	switch format {
 	case "json":
@@ -186,7 +207,7 @@ func runCheck(eng *engine.Engine, paths []string, format string, w io.Writer) (i
 // writing responses and notifications to stdout.
 func runServer() {
 	policiesDir := flag.String("policies", defaultPoliciesDir(), "directory containing .rego policy files")
-	logLevel := flag.String("log-level", "warn", "log level: debug, info, warn, error")
+	logLevel := flag.String("log-level", "debug", "log level: debug, info, warn, error")
 	flag.Parse()
 
 	// Allow override via environment variable.
@@ -197,9 +218,10 @@ func runServer() {
 	// Configure structured logging to stderr.
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
-		level = slog.LevelWarn
+		level = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	slog.Info("gov-lsp server: starting", "policies", *policiesDir, "log-level", *logLevel)
 
 	eng, err := engine.NewFromDir(*policiesDir)
 	if err != nil {
@@ -214,8 +236,10 @@ func runServer() {
 	publish := func(notif lsp.Notification) {
 		data, err := json.Marshal(notif)
 		if err != nil {
+			slog.Warn("gov-lsp server: failed to marshal notification", "method", notif.Method, "err", err)
 			return
 		}
+		slog.Debug("gov-lsp server: sending notification", "method", notif.Method, "bytes", len(data))
 		writerMu.Lock()
 		defer writerMu.Unlock()
 		writeMessage(writer, data)
@@ -224,35 +248,42 @@ func runServer() {
 	handler := lsp.NewHandler(eng, publish)
 	reader := bufio.NewReader(os.Stdin)
 	ctx := context.Background()
+	slog.Info("gov-lsp server: ready — listening on stdin")
 
 	for {
 		msg, err := readMessage(reader)
 		if err != nil {
 			if err == io.EOF {
+				slog.Info("gov-lsp server: stdin closed — shutting down")
 				return
 			}
-			slog.Warn("read error", "err", err)
+			slog.Warn("gov-lsp server: read error", "err", err)
 			return
 		}
+		slog.Debug("gov-lsp server: received message", "bytes", len(msg))
 
 		var req lsp.Request
 		if err := json.Unmarshal(msg, &req); err != nil {
-			slog.Warn("unmarshal error", "err", err)
+			slog.Warn("gov-lsp server: unmarshal error", "err", err)
 			continue
 		}
+		slog.Debug("gov-lsp server: dispatching", "method", req.Method, "id", req.ID)
 
 		resp := handler.Handle(ctx, &req)
 		if resp != nil {
 			data, err := json.Marshal(resp)
 			if err != nil {
+				slog.Warn("gov-lsp server: failed to marshal response", "method", req.Method, "err", err)
 				continue
 			}
+			slog.Debug("gov-lsp server: sending response", "method", req.Method, "bytes", len(data))
 			writerMu.Lock()
 			writeMessage(writer, data)
 			writerMu.Unlock()
 		}
 		// The LSP exit notification signals the server to terminate.
 		if req.Method == "exit" {
+			slog.Info("gov-lsp server: exit received — terminating")
 			return
 		}
 	}
