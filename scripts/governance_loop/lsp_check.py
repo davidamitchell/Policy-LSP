@@ -16,6 +16,12 @@ Output:
     JSON array of violation objects — same schema as gov-lsp check --format
     json — written to stdout.  All diagnostic traces go to stderr.
 
+Verbosity:
+    Set LOG_LEVEL=debug (the default) to enable full trace logging: each
+    outgoing LSP message (JSON-RPC), the raw server response bytes, and
+    every parsed incoming message.  Set LOG_LEVEL=info or higher to reduce
+    output to summary lines only.
+
 Exit codes:
     0  clean workspace (no violations)
     1  violations found
@@ -25,6 +31,40 @@ import json
 import os
 import subprocess
 import sys
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+# Honour the same LOG_LEVEL env var used by the shell scripts and Go binary.
+# "debug" (the default) enables full protocol tracing.  Any higher level
+# (info, warn, error) suppresses debug output.
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "debug").lower()
+_VERBOSE = _LOG_LEVEL == "debug"
+
+
+def _dbg(msg: str) -> None:
+    """Emit a debug-level trace to stderr (only when LOG_LEVEL=debug)."""
+    if _VERBOSE:
+        print(f"[lsp_check][DEBUG] {msg}", file=sys.stderr)
+
+
+def _info(msg: str) -> None:
+    """Emit an info-level line to stderr (always visible)."""
+    print(f"[lsp_check] {msg}", file=sys.stderr)
+
+
+def _log_rpc_msg(direction: str, msg: dict) -> None:
+    """Log a single JSON-RPC message at debug level with full payload."""
+    if not _VERBOSE:
+        return
+    method = msg.get("method", "<response>")
+    msg_id = msg.get("id", "<no-id>")
+    payload = json.dumps(msg, indent=2, ensure_ascii=False)
+    _dbg(
+        f"rpc {direction}: method={method} id={msg_id} payload_bytes={len(payload)}"
+        f"\n---begin rpc {direction}---\n{payload}\n---end rpc {direction}---"
+    )
 
 
 def _encode(body: dict) -> bytes:
@@ -88,26 +128,31 @@ def main() -> int:
         return 2
 
     binary, policies_dir, workspace = sys.argv[1], sys.argv[2], sys.argv[3]
-    print(
-        f"[lsp_check] starting binary={binary} policies={policies_dir} workspace={workspace}",
-        file=sys.stderr,
+    _info(
+        f"starting binary={binary} policies={policies_dir}"
+        f" workspace={workspace} log_level={_LOG_LEVEL}"
     )
+
+    server_cmd = [binary, "--policies", policies_dir, "--log-level", "debug"]
+    _dbg(f"server command (dereferenced): {' '.join(server_cmd)}")
 
     try:
         proc = subprocess.Popen(
-            [binary, "--policies", policies_dir, "--log-level", "debug"],
+            server_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=sys.stderr,
         )
     except FileNotFoundError:
-        print(f"[lsp_check] ERROR: gov-lsp binary not found: {binary}", file=sys.stderr)
+        _info(f"ERROR: gov-lsp binary not found: {binary}")
         return 2
+
+    _info(f"gov-lsp server started pid={proc.pid}")
 
     outgoing: list = []
 
     # 1. initialize request
-    outgoing.append(_encode({
+    init_msg = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
@@ -115,14 +160,18 @@ def main() -> int:
             "rootUri": f"file://{workspace}",
             "capabilities": {},
         },
-    }))
+    }
+    outgoing.append(_encode(init_msg))
+    _log_rpc_msg("→ send", init_msg)
 
     # 2. initialized notification (no id — must not be responded to)
-    outgoing.append(_encode({
+    initialized_msg = {
         "jsonrpc": "2.0",
         "method": "initialized",
         "params": {},
-    }))
+    }
+    outgoing.append(_encode(initialized_msg))
+    _log_rpc_msg("→ send", initialized_msg)
 
     # 3. textDocument/didOpen for every non-hidden workspace file
     file_count = 0
@@ -135,10 +184,10 @@ def main() -> int:
                 with open(fpath, "r", errors="replace") as fh:
                     text = fh.read()
             except OSError as exc:
-                print(f"[lsp_check] skipping unreadable file={fpath} err={exc}", file=sys.stderr)
+                _info(f"skipping unreadable file={fpath} err={exc}")
                 continue
             lang = os.path.splitext(fname)[1].lstrip(".") or "text"
-            outgoing.append(_encode({
+            did_open_msg = {
                 "jsonrpc": "2.0",
                 "method": "textDocument/didOpen",
                 "params": {
@@ -149,23 +198,29 @@ def main() -> int:
                         "text": text,
                     }
                 },
-            }))
+            }
+            outgoing.append(_encode(did_open_msg))
+            _log_rpc_msg("→ send", did_open_msg)
             file_count += 1
 
-    print(f"[lsp_check] sending didOpen for {file_count} file(s)", file=sys.stderr)
+    _info(f"sending didOpen for {file_count} file(s)")
 
     # 4. shutdown request + exit notification to terminate the server cleanly
-    outgoing.append(_encode({
+    shutdown_msg = {
         "jsonrpc": "2.0",
         "id": 2,
         "method": "shutdown",
         "params": {},
-    }))
-    outgoing.append(_encode({
+    }
+    exit_msg = {
         "jsonrpc": "2.0",
         "method": "exit",
         "params": {},
-    }))
+    }
+    outgoing.append(_encode(shutdown_msg))
+    _log_rpc_msg("→ send", shutdown_msg)
+    outgoing.append(_encode(exit_msg))
+    _log_rpc_msg("→ send", exit_msg)
 
     # Write all messages then close stdin to signal EOF.
     # The server exits when it receives the exit notification; closing stdin
@@ -185,10 +240,28 @@ def main() -> int:
         proc.kill()
         stdout_bytes = proc.stdout.read()  # type: ignore[union-attr]
         proc.wait()
-        print("[lsp_check] WARNING: gov-lsp server timed out after 30s", file=sys.stderr)
+        _info("WARNING: gov-lsp server timed out after 30s")
+
+    _info(f"server exited return_code={proc.returncode} stdout_bytes={len(stdout_bytes)}")
+
+    # When LOG_LEVEL=debug, emit the full unparsed raw bytes from the server so
+    # the caller can see exactly what the server sent before any parsing.
+    if _VERBOSE and stdout_bytes:
+        try:
+            raw_text = stdout_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            raw_text = repr(stdout_bytes)
+        _dbg(
+            f"raw server stdout (unparsed, {len(stdout_bytes)} bytes):"
+            f"\n---begin raw server response---\n{raw_text}\n---end raw server response---"
+        )
 
     all_msgs = _parse_messages(stdout_bytes)
-    print(f"[lsp_check] received {len(all_msgs)} LSP messages from server", file=sys.stderr)
+    _info(f"received {len(all_msgs)} LSP messages from server")
+
+    # Log every parsed incoming message at debug level (not just publishDiagnostics).
+    for msg in all_msgs:
+        _log_rpc_msg("← recv", msg)
 
     # Collect publishDiagnostics notifications and convert to violation objects.
     violations: list = []
@@ -198,14 +271,11 @@ def main() -> int:
         params = msg.get("params", {})
         uri = params.get("uri", "")
         diags = params.get("diagnostics", [])
-        print(
-            f"[lsp_check] publishDiagnostics uri={uri} count={len(diags)}",
-            file=sys.stderr,
-        )
+        _info(f"publishDiagnostics uri={uri} count={len(diags)}")
         for diag in diags:
             violations.append(_diagnostic_to_violation(uri, diag))
 
-    print(f"[lsp_check] total violations={len(violations)}", file=sys.stderr)
+    _info(f"total violations={len(violations)}")
     print(json.dumps(violations, indent=2))
     return 1 if violations else 0
 

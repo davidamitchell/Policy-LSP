@@ -204,6 +204,44 @@ echo ""
 
 # ---- helpers -----------------------------------------------------------------
 
+# log_agent_output streams the contents of an agent log file to stderr at
+# debug level, line by line.  This makes the agent's full reasoning, tool
+# calls, and output visible in CI logs when LOG_LEVEL=debug (the default).
+# Controlled by the existing LOG_LEVEL idiom — set LOG_LEVEL=info or higher
+# to suppress agent output in the logs.
+log_agent_output() {
+  local log_file="$1"
+  local label="${2:-agent}"
+  if ! _gov_should_log "debug"; then
+    return 0
+  fi
+  if [[ ! -s "$log_file" ]]; then
+    log_debug "agent_output: empty or missing file=$log_file label=$label"
+    return 0
+  fi
+  log_debug "agent_output: begin label=$label file=$log_file <<<<<"
+  while IFS= read -r line; do
+    log_debug "[$label] $line"
+  done < "$log_file"
+  log_debug "agent_output: end label=$label >>>>>"
+}
+
+# log_prompt logs the full content of a prompt string to stderr at debug
+# level, prefixed with a header and footer so it is easy to extract from
+# dense CI log output.  Controlled by LOG_LEVEL (debug = show, info = hide).
+log_prompt() {
+  local prompt="$1"
+  local label="${2:-prompt}"
+  if ! _gov_should_log "debug"; then
+    return 0
+  fi
+  log_debug "prompt_content: begin label=$label bytes=${#prompt} <<<<<"
+  while IFS= read -r line; do
+    log_debug "[$label] $line"
+  done <<< "$prompt"
+  log_debug "prompt_content: end label=$label >>>>>"
+}
+
 # LAST_VIOLATIONS holds the JSON array from the most recent diagnostic collection.
 LAST_VIOLATIONS="[]"
 
@@ -487,6 +525,11 @@ log_debug "phase1: task=\"$AGENT_TASK\""
 AGENT_LOG=$(mktemp /tmp/governance_agent_initial.XXXXXX)
 log_debug "phase1: agent log file=$AGENT_LOG"
 
+# Log the full prompt and the exact dereferenced CLI command before invoking.
+# Controlled by LOG_LEVEL: debug = full detail, info = suppress (default=debug).
+log_prompt "$AGENT_TASK" "phase1/initial"
+log_debug "phase1: copilot command (dereferenced): copilot -p '<see prompt above>' --autopilot --allow-all workspace=$WORKSPACE"
+
 INITIAL_EXIT=0
 (
   cd "$WORKSPACE"
@@ -503,6 +546,9 @@ if [[ $INITIAL_EXIT -ne 0 ]]; then
 else
   log_info "phase1: initial agent run complete exit_code=0"
 fi
+
+# Stream the full agent output (thinking, tool calls, actions) to the log.
+log_agent_output "$AGENT_LOG" "phase1/copilot"
 
 echo "Waiting for workspace to settle..."
 log_debug "phase1: waiting for workspace to settle after initial run"
@@ -597,6 +643,11 @@ finishing."
   AGENT_LOG=$(mktemp /tmp/governance_agent_iter.XXXXXX)
   log_debug "phase2: correction agent log file=$AGENT_LOG"
 
+  # Log the full correction prompt and dereferenced CLI command before invoking.
+  # Controlled by LOG_LEVEL: debug = full detail, info = suppress (default=debug).
+  log_prompt "$PROMPT" "phase2/correction-iter${iteration}"
+  log_debug "phase2: copilot command (dereferenced): copilot -p '<see prompt above>' --autopilot --allow-all workspace=$WORKSPACE iteration=$iteration"
+
   AGENT_EXIT=0
   (
     cd "$WORKSPACE"
@@ -613,6 +664,9 @@ finishing."
   else
     log_info "phase2: correction agent complete exit_code=0 iteration=$iteration"
   fi
+
+  # Stream the full agent output (thinking, tool calls, actions) to the log.
+  log_agent_output "$AGENT_LOG" "phase2/copilot-iter${iteration}"
 
   # Step 8: wait for workspace changes before re-evaluating.
   echo "Waiting for workspace changes..."
