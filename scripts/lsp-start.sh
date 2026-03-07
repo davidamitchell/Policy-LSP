@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # lsp-start.sh — start gov-lsp in LSP server mode (stdio, Content-Length framing).
 #
-# Used as the command in .claude/lsp.json and .github/lsp.json so that
-# Claude Code and GitHub Copilot Agent can register gov-lsp as a language
+# Used as the command in .github/lsp.json so that
+# GitHub Copilot Agent can register gov-lsp as a language
 # server and receive textDocument/publishDiagnostics events in real time,
 # exactly as an IDE editor client would.
 #

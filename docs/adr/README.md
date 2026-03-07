@@ -13,6 +13,8 @@ This directory contains Architecture Decision Records (ADRs) for the GOV-LSP pro
 | [0005](0005-cli-check-subcommand.md) | CLI check subcommand (`gov-lsp check`) | accepted |
 | [0006](0006-agent-loop-integration.md) | Agent loop integration: PostToolUse hook + MCP server | accepted |
 
+| [0007](0007-standardise-agent-instructions.md) | Standardise agent instruction files to single source of truth | accepted |
+
 ## Adding a New ADR
 
 1. Copy the template below into `docs/adr/NNNN-short-title.md` (zero-padded 4 digits).

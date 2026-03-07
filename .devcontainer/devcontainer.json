@@ -19,7 +19,7 @@
       ]
     },
     "codespaces": {
-      "openFiles": ["CLAUDE.md", "AGENTS.md"]
+      "openFiles": [".github/copilot-instructions.md"]
     }
   },
 
