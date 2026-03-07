@@ -387,3 +387,15 @@ All paths → internal/engine/rego.go → policies/*.rego
 ## 2026-03-07
 
 Standardisation pass: cleaned .github/copilot-instructions.md of AGENTS.md/CLAUDE.md references. Deleted AGENTS.md, CLAUDE.md, .claude/, scripts/sync-copilot-instructions.sh. Updated copilot-setup-steps.yml to remove sync step and read from copilot-instructions.md. Updated .gitmodules and sync-skills.yml to remove .claude/skills. Added Skills, Backlog, ADR, PROGRESS, and CHANGELOG mandates to copilot-instructions.md. Appended W-0031 to BACKLOG.md. Created docs/adr/0007-standardise-agent-instructions.md. Updated README.md. Created CHANGELOG.md.
+
+## 2026-03-07 — Continuous Improvement & Learning framework
+
+**Changes:**
+- Replaced the existing `## Mini-Retro — After Each Piece of Work` section in `.github/copilot-instructions.md` with the unified self-improvement framework (`## Continuous Improvement & Learning`).
+- Added `## Chain-of-Thought Reasoning` section tailored to Policy-LSP, covering: policy correctness and edge cases, LSP spec compliance, downstream client impact, protocol-level vs implementation-level issues, test coverage requirements, and improvement implications.
+
+**Mini-Retro:**
+1. **Did the process work?** Yes — the change was surgical: one section replaced, one new section appended.
+2. **What slowed down or went wrong?** Nothing significant; the canonical file was clearly identified from repository memory.
+3. **What single change would prevent friction next time?** Nothing to add — the canonical-source pattern (copilot-instructions.md as sole source of truth) worked well.
+4. **Is this a pattern?** The mini-retro format itself is now standardised by this very change.
