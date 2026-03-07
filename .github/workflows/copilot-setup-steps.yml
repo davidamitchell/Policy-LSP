@@ -60,16 +60,10 @@ jobs:
         run: gh copilot -- --help
         continue-on-error: true
 
-      - name: Sync copilot instructions from AGENTS.md
-        # Keep .github/copilot-instructions.md up to date with the canonical
-        # AGENTS.md so that GitHub Copilot's coding agent always receives the
-        # full project instructions.
-        run: bash scripts/sync-copilot-instructions.sh
-
       - name: Read agent instructions
         run: |
           echo "=== AGENT INSTRUCTIONS ==="
-          cat AGENTS.md
+          cat .github/copilot-instructions.md
           echo ""
           echo "=== POLICY ENFORCEMENT NOTICE ==="
           echo "gov-lsp is available. Run 'gov-lsp check .' to verify policy compliance."

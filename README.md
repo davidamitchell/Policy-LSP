@@ -134,9 +134,14 @@ internal/engine/rego.go    # OPA SDK wrapper
 internal/lsp/handlers.go   # LSP method dispatch + diagnostic mapping
 policies/                  # Rego policy files (hot-swappable)
 docs/                      # Human-facing documentation
+docs/adr/                  # Architecture Decision Records
 scripts/smoke_test.sh      # End-to-end integration test
 Dockerfile                 # Multi-stage static build → scratch image
 research/                  # Research findings and integration templates
+BACKLOG.md                 # Repo improvement backlog
+PROGRESS.md                # Session history (append-only)
+CHANGELOG.md               # User-facing change history
+.github/copilot-instructions.md  # Agent instructions (AI agents should read this)
 ```
 
 ## License

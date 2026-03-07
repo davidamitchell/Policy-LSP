@@ -381,3 +381,9 @@ All paths → internal/engine/rego.go → policies/*.rego
 3. W-0010 — Release workflow (GitHub Actions, multi-arch binaries, GHCR image)
 4. W-0014 — `gov-lsp-governance` agent skill (SKILL.md + `gov-lsp check` CLI)
 5. W-0015 — VS Code extension (`vscode-gov-lsp`)
+
+---
+
+## 2026-03-07
+
+Standardisation pass: cleaned .github/copilot-instructions.md of AGENTS.md/CLAUDE.md references. Deleted AGENTS.md, CLAUDE.md, .claude/, scripts/sync-copilot-instructions.sh. Updated copilot-setup-steps.yml to remove sync step and read from copilot-instructions.md. Updated .gitmodules and sync-skills.yml to remove .claude/skills. Added Skills, Backlog, ADR, PROGRESS, and CHANGELOG mandates to copilot-instructions.md. Appended W-0031 to BACKLOG.md. Created docs/adr/0007-standardise-agent-instructions.md. Updated README.md. Created CHANGELOG.md.

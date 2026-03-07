@@ -185,26 +185,27 @@ policies/                  # Rego policy files
 docs/adr/                  # Architecture Decision Records
 scripts/smoke_test.sh      # End-to-end smoke test
 Dockerfile                 # Multi-stage static build
-AGENTS.md                  # This file
 BACKLOG.md                 # Repo improvement backlog
 PROGRESS.md                # Session history
+CHANGELOG.md               # User-facing change history
 .github/
-├── copilot-instructions.md
+├── copilot-instructions.md  # Agent instructions (single source of truth)
 ├── mcp.json               # MCP servers for GitHub Copilot
 ├── skills/                # Skills submodule (davidamitchell/Skills)
 └── workflows/
     ├── ci.yml
     └── sync-skills.yml
-.claude/
-└── skills/                # Same Skills submodule, for Claude Code
-.mcp.json                  # MCP servers for Claude Code
+docs/adr/                  # Architecture Decision Records
+.mcp.json                  # MCP servers for Claude Code and other agents
 ```
 
 ---
 
 ## Agent Skills
 
-`.github/skills/` and `.claude/skills/` are git submodules tracking [`davidamitchell/Skills`](https://github.com/davidamitchell/Skills). A weekly workflow advances the submodule pointer to the latest commit.
+Skills are available at `.github/skills/`. Key skills: `backlog-manager`, `research`, `technical-writer`, `code-review`, `strategy-author`, `decisions`.
+
+`.github/skills/` is a git submodule tracking [`davidamitchell/Skills`](https://github.com/davidamitchell/Skills). A weekly workflow advances the submodule pointer to the latest commit.
 
 | Skill | When it applies |
 |---|---|
@@ -216,15 +217,38 @@ PROGRESS.md                # Session history
 
 ---
 
+## Backlog
+
+The backlog is `BACKLOG.md` at the repo root. Use the `backlog-manager` skill from `.github/skills/backlog-manager/SKILL.md`. Read it at the start of every session.
+
+---
+
+## ADR Mandate
+
+Every non-trivial architectural or design decision must be recorded as an ADR in `docs/adr/`. Use the `decisions` skill from `.github/skills/decisions/SKILL.md`. Format is MADR. Files named `docs/adr/NNNN-short-title.md`.
+
+---
+
+## PROGRESS.md Mandate
+
+Append a dated entry to `PROGRESS.md` after every meaningful session or PR. Never edit old entries — append only. Format: `## YYYY-MM-DD` then what changed and why. Append-only prevents merge conflicts.
+
+---
+
+## CHANGELOG.md Mandate
+
+Record every user-facing change in `CHANGELOG.md`. Follow Keep-a-Changelog 1.0.0. New entries go under `## [Unreleased]` at the top.
+
+---
+
 ## Policy Enforcement in the Agent Loop
 
 This repository is self-governing. The same `gov-lsp` tool it ships runs against
 its own source on every file write.
 
-### Native LSP Client (Claude Code + GitHub Copilot CLI)
+### Native LSP Client (GitHub Copilot CLI)
 
-`.claude/lsp.json` registers `gov-lsp` as a Language Server for Claude Code.
-`.github/lsp.json` does the same for the GitHub Copilot CLI using the `lspServers`
+`.github/lsp.json` registers `gov-lsp` as a Language Server for the GitHub Copilot CLI using the `lspServers`
 schema the CLI reads at startup:
 
 ```json
@@ -248,14 +272,6 @@ severity, and `data.fix` containing the suggested correction.
 
 This is the highest-fidelity integration: no polling, no manual invocation, violations
 appear in real time on every file event.
-
-### Automatic: PostToolUse Hook (Claude Code)
-
-`.claude/settings.json` configures a `PostToolUse` hook on `Write`, `Edit`, and
-`MultiEdit`. After every file modification, `.claude/hooks/policy-gate.sh` runs
-`gov-lsp check` on the changed file and exits 1 with violation output if any policy
-is violated. Claude Code surfaces the output inline and the agent is expected to fix
-violations before continuing.
 
 ### Explicit: MCP Tool (`gov_check_file`, `gov_check_workspace`)
 

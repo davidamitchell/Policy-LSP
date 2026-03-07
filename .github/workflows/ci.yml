@@ -46,10 +46,6 @@ jobs:
           go build -o /tmp/gov-lsp ./cmd/gov-lsp
           GOV_LSP_POLICIES=./policies bash scripts/smoke_test.sh /tmp/gov-lsp
 
-      - name: Hook test
-        run: |
-          GOV_LSP_POLICIES=./policies bash scripts/test_policy_gate.sh /tmp/gov-lsp
-
       - name: Install inotify-tools
         # Required for efficient filesystem-change detection in governance_loop.sh.
         # Without this, the script falls back to polling (3s intervals) which is

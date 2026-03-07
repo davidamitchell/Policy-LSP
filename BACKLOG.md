@@ -507,3 +507,22 @@ updated: 2026-03-02
 
 Without the SessionStart hook, all three enforcement paths (PostToolUse hook, LSP server, MCP tool) are silently inactive when the binary is absent. `lsp-start.sh` and `mcp-start.sh` attempt inline builds but fail without network or vendor/. The SessionStart hook fires before any agent turn, ensuring enforcement is always active. Implemented in this session (2026-03-02).
 
+
+---
+
+## W-0031
+
+status: done
+created: 2026-03-07
+updated: 2026-03-07
+
+### Outcome
+
+Repository structure is standardised: single `.github/copilot-instructions.md` source of truth, `.github/skills` submodule, `sync-skills.yml` workflow, `BACKLOG.md`, `PROGRESS.md`, `CHANGELOG.md`, and `docs/adr/` all present and consistent.
+
+### Context
+
+Standardisation pass to remove AGENTS.md, CLAUDE.md, .claude/, scripts/sync-copilot-instructions.sh and align with all other repos in the davidamitchell organisation.
+
+### Notes
+
