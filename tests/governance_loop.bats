@@ -347,8 +347,7 @@ ${summary}
 Structured violation data (JSON):
 ${violations}
 
-Use your file tools to fix every violation. The fix.value field tells you the
-target filename for rename violations. Apply all fixes, then stop."
+Fix every violation. Apply all fixes, then stop."
 
   # prompt must contain the structured JSON so the agent can act on it.
   [[ "$prompt" == *'"fix"'* ]]

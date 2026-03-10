@@ -589,8 +589,7 @@ ${DIAGNOSTIC_CONTEXT}
 Structured violation data (JSON):
 ${LAST_VIOLATIONS}
 
-Use your file tools to fix every violation. The fix.value field tells you the
-target filename for rename violations. Apply all fixes, then stop."
+Fix every violation. Apply all fixes, then stop."
 
   log_debug "phase2: correction prompt built prompt_length=${#PROMPT} violations=$VIOLATION_COUNT"
 
