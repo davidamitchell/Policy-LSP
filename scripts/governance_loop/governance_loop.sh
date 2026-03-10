@@ -3,9 +3,13 @@
 #
 # Orchestrates a headless Copilot CLI agent in a policy-governed workspace.
 # Each iteration uses real-time LSP event simulation (when Python 3 is available)
-# or falls back to gov-lsp batch check to collect violations.  Auto-applies
-# simple rename fixes directly before re-prompting the agent, reducing LLM
-# round-trips for fixable violations.
+# or falls back to gov-lsp batch check to collect violations.
+#
+# Design intent (see docs/adr/0006-agent-loop-integration.md):
+#   The governance loop is a FEEDBACK HARNESS, not a fix engine.  The agent is
+#   responsible for applying every fix.  Shell code never modifies workspace
+#   files.  Violations are collected, formatted, and injected into the agent
+#   prompt so the agent can self-correct using its own tools.
 #
 # Phase 1 — Initial agent run (task execution):
 #   The agent is run with the original task unconditionally.
@@ -13,23 +17,16 @@
 # Phase 2 — Convergence correction loop:
 #   1. Collect violations (LSP simulation → batch check fallback)
 #   2. If zero → convergence, exit 0
-#   3. Auto-apply all rename-type fixes directly (mv, no LLM round-trip)
-#   4. Re-check workspace after auto-fix; if zero → convergence, exit 0
-#   5. Inject remaining violations (human-readable + raw JSON) into prompt
-#   6. Re-run the agent with that context
-#   7. Watch for filesystem changes (inotifywait / fswatch / poll fallback)
-#   8. Repeat from step 1
+#   3. Format all violations (human-readable summary + structured JSON) into prompt
+#   4. Run the agent with that prompt — the agent decides how to fix each violation
+#   5. Watch for filesystem changes (inotifywait / fswatch / poll fallback)
+#   6. Repeat from step 1
 #
 # LSP Simulation (when python3 is available):
 #   scripts/governance_loop/lsp_check.py starts gov-lsp as a background server,
 #   sends textDocument/didOpen for every workspace file over JSON-RPC, collects
 #   publishDiagnostics notifications, and returns the same JSON violation schema
 #   as gov-lsp check --format json.  This exercises the full LSP protocol path.
-#
-# Auto-apply rename fixes:
-#   Violations with fix.type == "rename" are applied directly with mv, bypassing
-#   the LLM.  Only violations that cannot be auto-applied are re-injected into
-#   the agent prompt.
 #
 # Portability note:
 #   This directory (governance_loop/) is self-contained except for the shared
@@ -279,9 +276,6 @@ LAST_VIOLATIONS="[]"
 # LAST_VIOLATIONS is updated in the current shell context.
 LAST_VIOLATION_COUNT=0
 
-# LAST_REMAINING_COUNT holds the count from the most recent auto_apply_rename_fixes call.
-LAST_REMAINING_COUNT=0
-
 # collect_lsp_diagnostics uses lsp_check.py to run a gov-lsp server in the
 # background and simulate textDocument/didOpen events for all workspace files.
 # Captures publishDiagnostics notifications and converts them to the same JSON
@@ -385,100 +379,6 @@ except Exception:
   log_info "collect_violations: complete violations=$count workspace=$ws"
   LAST_VIOLATION_COUNT="${count:-0}"
   echo "${count:-0}"
-}
-
-# auto_apply_rename_fixes directly applies fix.type=="rename" violations by
-# renaming files with mv, without re-prompting the LLM.  Prints the count of
-# violations that could NOT be auto-applied (i.e., still need agent attention).
-# Sets LAST_VIOLATIONS to the subset of violations that were not auto-applied.
-auto_apply_rename_fixes() {
-  local violations="$1"
-  local applied=0
-  local remaining_violations="[]"
-
-  log_debug "auto_apply_rename_fixes: processing violations"
-
-  if command -v jq &>/dev/null; then
-    local remaining_list=()
-    while IFS= read -r obj; do
-      local file fix_type fix_val
-      file=$(printf '%s' "$obj" | jq -r '.file // ""')
-      fix_type=$(printf '%s' "$obj" | jq -r '.fix.type // ""')
-      fix_val=$(printf '%s' "$obj" | jq -r '.fix.value // ""')
-
-      if [[ "$fix_type" == "rename" && -n "$fix_val" && -f "$file" ]]; then
-        local new_path
-        new_path="$(dirname "$file")/$fix_val"
-        if mv "$file" "$new_path" 2>/dev/null; then
-          log_info "auto_apply: renamed file=$file to=$new_path"
-          applied=$((applied + 1))
-        else
-          log_warn "auto_apply: rename failed file=$file to=$new_path"
-          remaining_list+=("$obj")
-        fi
-      else
-        remaining_list+=("$obj")
-      fi
-    done < <(printf '%s' "$violations" | jq -c '.[]' 2>/tmp/jq_auto_err || true)
-    if [[ -s /tmp/jq_auto_err ]]; then
-      log_warn "auto_apply_rename_fixes: jq parse error — $(cat /tmp/jq_auto_err)"
-    fi
-    rm -f /tmp/jq_auto_err
-
-    # Rebuild LAST_VIOLATIONS with only remaining (non-auto-fixed) violations.
-    if [[ ${#remaining_list[@]} -eq 0 ]]; then
-      LAST_VIOLATIONS="[]"
-    else
-      LAST_VIOLATIONS=$(printf '%s\n' "${remaining_list[@]}" | jq -s '.' 2>/dev/null || echo "[]")
-    fi
-
-  elif command -v python3 &>/dev/null; then
-    local py_stderr
-    py_stderr=$(mktemp)
-    result=$(printf '%s' "$violations" | python3 -c "
-import sys, json, os
-data = json.load(sys.stdin)
-remaining = []
-applied = 0
-for v in data:
-    f = v.get('file', '')
-    fix = v.get('fix') or {}
-    if fix.get('type') == 'rename' and fix.get('value') and os.path.isfile(f):
-        new_path = os.path.join(os.path.dirname(f), fix['value'])
-        try:
-            os.rename(f, new_path)
-            print(f'RENAMED:{f}:{new_path}', file=sys.stderr)
-            applied += 1
-        except OSError as e:
-            print(f'RENAME_FAILED:{f}:{e}', file=sys.stderr)
-            remaining.append(v)
-    else:
-        remaining.append(v)
-print(f'APPLIED:{applied}', file=sys.stderr)
-print(json.dumps(remaining))
-" 2>"$py_stderr" || echo "[]")
-    if [[ -s "$py_stderr" ]]; then
-      while IFS= read -r line; do log_debug "auto_apply[py]: $line"; done < "$py_stderr"
-    fi
-    rm -f "$py_stderr"
-    LAST_VIOLATIONS="$result"
-    applied=$(printf '%s' "$violations" | python3 -c "
-import sys, json; data = json.load(sys.stdin)
-r = sum(1 for v in data if (v.get('fix') or {}).get('type') == 'rename')
-print(r)
-" 2>/dev/null || echo "0")
-  fi
-
-  local remaining_count
-  if command -v jq &>/dev/null; then
-    remaining_count=$(printf '%s' "$LAST_VIOLATIONS" | jq 'length' 2>/dev/null || echo "0")
-  else
-    remaining_count=$(printf '%s' "$LAST_VIOLATIONS" | grep -c '"id":' 2>/dev/null || echo "0")
-  fi
-
-  log_info "auto_apply: applied=$applied remaining=$remaining_count"
-  LAST_REMAINING_COUNT="$remaining_count"
-  echo "$remaining_count"
 }
 
 # format_context converts the violation JSON array into a human-readable
@@ -606,10 +506,9 @@ echo ""
 
 # ---- phase 2: convergence loop (violation correction) -----------------------
 #
-# Evaluate the workspace.  If the initial run left violations:
-#   1. Try auto-applying rename fixes directly (no LLM round-trip).
-#   2. If auto-fix resolved everything → convergence.
-#   3. Otherwise inject remaining violations into the agent prompt and re-run.
+# Evaluate the workspace.  If the initial run left violations, format them into
+# a correction prompt and re-run the agent.  The agent is responsible for
+# applying every fix — the loop collects, formats, and injects context only.
 # Repeat until the workspace is clean or MAX_ITER correction rounds are exhausted.
 
 log_info "phase2: starting convergence loop max_iter=$MAX_ITER"
@@ -669,31 +568,7 @@ while [[ $iteration -lt $MAX_ITER ]]; do
     break
   fi
 
-  # Step 3: attempt auto-apply of rename-type fixes before involving the LLM.
-  # Call directly (not via $(...)) so LAST_VIOLATIONS is updated in this shell
-  # to the subset of violations that could not be auto-fixed.
-  log_info "phase2: attempting auto-apply of rename fixes violations=$VIOLATION_COUNT iteration=$iteration"
-  auto_apply_rename_fixes "$LAST_VIOLATIONS" >/dev/null
-  REMAINING="$LAST_REMAINING_COUNT"
-  log_info "phase2: after auto-apply remaining=$REMAINING iteration=$iteration"
-
-  # Step 4: re-check after auto-fix to see if we achieved convergence.
-  if [[ "$REMAINING" -eq 0 ]]; then
-    log_debug "phase2: verifying convergence after auto-apply"
-    collect_violations "$WORKSPACE" >/dev/null
-    RECHECK="$LAST_VIOLATION_COUNT"
-    if [[ "$RECHECK" -eq 0 ]]; then
-      log_info "phase2: auto-apply achieved convergence iteration=$iteration"
-      pass "convergence via auto-apply after $iteration iteration(s) — workspace is violation-free"
-      break
-    fi
-    log_debug "phase2: new violations introduced after auto-apply count=$RECHECK"
-    VIOLATION_COUNT="$RECHECK"
-  else
-    VIOLATION_COUNT="$REMAINING"
-  fi
-
-  # Step 5: format human-readable diagnostic context from remaining violations.
+  # Step 3: format human-readable diagnostic context from all violations.
   log_debug "phase2: formatting diagnostic context for agent prompt"
   DIAGNOSTIC_CONTEXT=$(format_context "$LAST_VIOLATIONS")
   echo ""
@@ -702,23 +577,24 @@ while [[ $iteration -lt $MAX_ITER ]]; do
   echo ""
   log_debug "phase2: diagnostic context formatted context_length=${#DIAGNOSTIC_CONTEXT}"
 
-  # Step 6: build correction prompt with structured violation data injected verbatim.
-  PROMPT="${AGENT_TASK}
-
-The workspace at ${WORKSPACE} has policy violations that must be corrected.
+  # Step 4: build correction prompt with structured violation data injected verbatim.
+  # The agent is responsible for applying every fix using its own tools.
+  # The fix.value field provides the target for rename violations; other fix types
+  # are described in the message.  The loop never modifies workspace files itself —
+  # see docs/adr/0006-agent-loop-integration.md for the design rationale.
+  PROMPT="The following policy violations were found in the workspace.
 
 ${DIAGNOSTIC_CONTEXT}
 
-Structured violation data (JSON — each object has file, id, message, and fix fields):
+Structured violation data (JSON):
 ${LAST_VIOLATIONS}
 
-Apply all fixes using your tools. Where fix.type is 'rename', rename the file
-to fix.value using a file-rename or move tool. Resolve every violation before
-finishing."
+Use your file tools to fix every violation. The fix.value field tells you the
+target filename for rename violations. Apply all fixes, then stop."
 
   log_debug "phase2: correction prompt built prompt_length=${#PROMPT} violations=$VIOLATION_COUNT"
 
-  # Step 7: run correction agent with diagnostic context.
+  # Step 5: run correction agent with diagnostic context.
   echo "Running correction agent (iteration $iteration)..."
   log_info "phase2: running correction agent iteration=$iteration violations=$VIOLATION_COUNT"
 
@@ -751,7 +627,7 @@ finishing."
   # Stream the full agent output (thinking, tool calls, actions) to the log.
   log_agent_output "$AGENT_LOG" "phase2/copilot-iter${iteration}"
 
-  # Step 8: wait for workspace changes before re-evaluating.
+  # Step 6: wait for workspace changes before re-evaluating.
   echo "Waiting for workspace changes..."
   log_debug "phase2: waiting for workspace changes after correction iteration=$iteration"
   wait_for_changes "$WORKSPACE"
