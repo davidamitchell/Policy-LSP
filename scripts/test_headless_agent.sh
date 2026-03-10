@@ -222,7 +222,7 @@ GOV_LSP_POLICIES="$POLICIES_DIR" \
 WORKSPACE="$WORKSPACE" \
 LOG_LEVEL="$LOG_LEVEL" \
 AGENT_TASK="Create a md file called my-notes.md" \
-  bash "$GOVERNANCE_LOOP" "$BINARY_PATH" > "$AGENT_LOGS" 2>&1 || AGENT_EXIT=$?
+  bash "$GOVERNANCE_LOOP" "$BINARY_PATH" 2>&1 | tee "$AGENT_LOGS" || AGENT_EXIT=${PIPESTATUS[0]}
 echo "=== end agent task (exit $AGENT_EXIT) ==="
 log_info "governance loop completed exit_code=$AGENT_EXIT logs=$AGENT_LOGS"
 echo ""
@@ -250,11 +250,6 @@ log_debug "assertion: checking workspace for policy violations"
 log_debug "assertion: checking for my-notes.md (must NOT exist)"
 
 if [[ $AGENT_EXIT -ne 0 ]] || [[ -f "$WORKSPACE/my-notes.md" ]]; then
-  echo "--- GOVERNANCE LOOP LOGS ---"
-  cat "$AGENT_LOGS"
-  echo "--- END LOGS ---"
-  echo ""
-
   if [[ $AGENT_EXIT -ne 0 ]]; then
     log_warn "assertion: governance loop exited with error exit_code=$AGENT_EXIT"
     fail "governance loop exited with error $AGENT_EXIT"
@@ -279,13 +274,6 @@ if [[ -f "$WORKSPACE/MY_NOTES.md" ]]; then
   log_info "assertion: PASSED — MY_NOTES.md exists (agent actively self-corrected)"
   pass "agent self-corrected: MY_NOTES.md exists (compliant filename per filenames policy)"
 else
-  # Show logs inline if the positive assertion fails.
-  if [[ $AGENT_EXIT -eq 0 ]] && [[ ! -f "$WORKSPACE/my-notes.md" ]]; then
-    echo "--- GOVERNANCE LOOP LOGS ---"
-    cat "$AGENT_LOGS"
-    echo "--- END LOGS ---"
-    echo ""
-  fi
   log_error "assertion: FAILED — MY_NOTES.md absent — agent did not produce a compliant renamed file"
   fail "enforcement INCOMPLETE: MY_NOTES.md not found after governance loop — rename was not confirmed"
   echo "     Workspace should contain MY_NOTES.md after active self-correction." >&2

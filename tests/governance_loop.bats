@@ -23,6 +23,12 @@
 #      verbose RPC payload dumps.
 #  12. lsp_check.py violation output for an isolated workspace does NOT include
 #      repository files like README.md.
+#  13. lsp_check.py violation output for an isolated workspace includes
+#      workspace-specific violations.
+#  14. filenames policy fix produces MY_NOTES.md for my-notes.md.
+#  15. auto_apply_rename_fixes renames my-notes.md to MY_NOTES.md on disk.
+#  16. tee pipeline: stdout streams inline AND file is written; PIPESTATUS[0]
+#      captures the correct exit code from the piped command, not from tee.
 #
 # Prerequisites:
 #   bats    (sudo apt-get install -y bats)
@@ -344,3 +350,47 @@ _run_with_log_level() {
   rm -rf "$ws"
   [ "$result_ok" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# 16. tee pipeline: stdout streams inline AND file is written;
+#     PIPESTATUS[0] captures the correct exit code from the piped command,
+#     not from tee (which always exits 0).
+#
+# This test validates the 12-factor logging fix applied to test_headless_agent.sh:
+#   bash "$GOVERNANCE_LOOP" ... 2>&1 | tee "$AGENT_LOGS" || AGENT_EXIT=${PIPESTATUS[0]}
+# ---------------------------------------------------------------------------
+@test "tee pipeline streams to stdout AND writes to file; PIPESTATUS[0] captures correct exit code" {
+  local log_file
+  log_file="$(mktemp)"
+
+  # --- Part 1: output appears on stdout AND in the file ---
+  local captured_stdout
+  captured_stdout=$(bash -c 'echo "stdout line"; echo "stderr line" >&2' 2>&1 | tee "$log_file")
+
+  # stdout received the combined stream inline
+  [[ "$captured_stdout" == *"stdout line"* ]]
+  [[ "$captured_stdout" == *"stderr line"* ]]
+
+  # the file also contains the combined stream (for artifact upload)
+  [[ "$(cat "$log_file")" == *"stdout line"* ]]
+  [[ "$(cat "$log_file")" == *"stderr line"* ]]
+
+  rm -f "$log_file"
+
+  # --- Part 2: PIPESTATUS[0] captures the failing command's exit code, not tee's ---
+  local log_file2
+  log_file2="$(mktemp)"
+
+  local pipe_exit=0
+  # set -o pipefail makes the pipeline exit with the failing command's code,
+  # matching the behaviour in test_headless_agent.sh (which uses set -uo pipefail).
+  set -o pipefail
+  bash -c 'echo "some output"; exit 42' 2>&1 | tee "$log_file2" || pipe_exit=${PIPESTATUS[0]}
+  set +o pipefail
+
+  rm -f "$log_file2"
+
+  # tee exits 0; PIPESTATUS[0] must reflect the bash sub-shell's exit code (42)
+  [ "$pipe_exit" -eq 42 ]
+}
+
