@@ -399,3 +399,50 @@ Standardisation pass: cleaned .github/copilot-instructions.md of AGENTS.md/CLAUD
 2. **What slowed down or went wrong?** Nothing significant; the canonical file was clearly identified from repository memory.
 3. **What single change would prevent friction next time?** Nothing to add — the canonical-source pattern (copilot-instructions.md as sole source of truth) worked well.
 4. **Is this a pattern?** The mini-retro format itself is now standardised by this very change.
+
+## 2026-03-10 — 12-factor logging fix for test_headless_agent.sh
+
+**Problem:** `scripts/test_headless_agent.sh` redirected the entire governance loop output into a private temp file (`$AGENT_LOGS`) and only printed it conditionally on failure. This broke 12-factor app rule XI: treat logs as event streams. 43 seconds of LSP interaction, agent reasoning, and JSON-RPC traces were invisible in CI step logs even at `LOG_LEVEL=verbose`.
+
+**Changes:**
+- `scripts/test_headless_agent.sh` line 225: replaced `> "$AGENT_LOGS" 2>&1 || AGENT_EXIT=$?` with `2>&1 | tee "$AGENT_LOGS" || AGENT_EXIT=${PIPESTATUS[0]}`. The governance loop event stream now flows to stdout (visible inline in CI) AND is written to the file (retained for artifact upload). `${PIPESTATUS[0]}` captures the correct exit code from the governance loop process, not from `tee`.
+- Removed redundant conditional `cat "$AGENT_LOGS"` blocks (formerly at lines 252–256 and 283–288) — the stream is now printed unconditionally inline via `tee`.
+- `tests/governance_loop.bats`: updated header comment list; added test 16 verifying that the `tee` pipeline streams to stdout AND writes to file, and that `${PIPESTATUS[0]}` captures the correct non-zero exit code from the piped command rather than from `tee`.
+
+**Mini-Retro:**
+1. **Did the process work?** Yes — the fix was surgical: one line changed, two redundant blocks removed, one test added.
+2. **What slowed down or went wrong?** Nothing significant.
+3. **What single change would prevent this next time?** The 12-factor log-as-event-stream rule should be called out explicitly in the coding standards section of copilot-instructions.md for shell scripts.
+4. **Is this a pattern?** Yes — capturing subprocess output to a private file and printing only on failure is a common anti-pattern in CI scripts. The fix (tee) is the standard remedy.
+
+## 2026-03-10 — Remove auto_apply_rename_fixes; agent-driven correction loop
+
+**Problem:** `auto_apply_rename_fixes()` in `governance_loop.sh` hardcoded shell-level
+fix dispatch for `fix.type == "rename"` violations using `mv`. This was the wrong design:
+the governance loop is a feedback harness, not a fix engine. Every new fix type would
+require a new case in the shell script. The agent is perfectly capable of renaming a file
+when told it violated a naming policy — it does not need the shell to do it.
+
+**Changes:**
+- `scripts/governance_loop/governance_loop.sh`: removed `auto_apply_rename_fixes()` function
+  and all call sites (steps 3 and 4 in the phase 2 loop). Removed `LAST_REMAINING_COUNT`
+  variable. Updated header comment to reflect the design intent: the loop is a feedback
+  harness, not a fix engine. See `docs/adr/0006-agent-loop-integration.md`.
+- Phase 2 correction prompt rewritten to be explicit that the agent must apply every fix
+  using its own tools. The prompt now includes both human-readable summary and raw violation
+  JSON, and states: "Use your file tools to fix every violation."
+- `tests/governance_loop.bats`: removed test 15 (`auto_apply_rename_fixes renames
+  my-notes.md`), replaced with new test 15 verifying that `format_context` produces a
+  human-readable summary and that the correction prompt includes raw violation JSON without
+  any `mv` call.
+- `CHANGELOG.md`: documented removal under `[Unreleased]`.
+
+**Mini-Retro:**
+1. **Did the process work?** Yes — the change was surgical: one function deleted, one loop
+   simplified, one test replaced, documentation updated.
+2. **What slowed down or went wrong?** Nothing significant.
+3. **What single change would prevent this next time?** The design principle (agent is the
+   fix engine) is now stated in the script header and referenced to the ADR so future
+   contributors can't miss it.
+4. **Is this a pattern?** Yes — hardcoding specific fix types in orchestration shell code
+   is a recurring temptation. The rule is: if the agent can do it, let the agent do it.

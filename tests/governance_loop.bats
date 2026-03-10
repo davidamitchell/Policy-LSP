@@ -23,6 +23,12 @@
 #      verbose RPC payload dumps.
 #  12. lsp_check.py violation output for an isolated workspace does NOT include
 #      repository files like README.md.
+#  13. lsp_check.py violation output for an isolated workspace includes
+#      workspace-specific violations.
+#  14. filenames policy fix produces MY_NOTES.md for my-notes.md.
+#  15. correction loop injects violation JSON into the agent prompt; no mv call.
+#  16. tee pipeline: stdout streams inline AND file is written; PIPESTATUS[0]
+#      captures the correct exit code from the piped command, not from tee.
 #
 # Prerequisites:
 #   bats    (sudo apt-get install -y bats)
@@ -294,11 +300,11 @@ _run_with_log_level() {
 }
 
 # ---------------------------------------------------------------------------
-# 15. auto_apply_rename_fixes renames my-notes.md to MY_NOTES.md on disk
-#     This is the core enforcement step that converts a violating file to
-#     its compliant counterpart without requiring agent intervention.
+# 15. correction loop injects violation JSON into the agent prompt; no mv call.
+#     The governance loop is a feedback harness — it must format violations and
+#     pass them to the agent; it must never call mv or apply fixes itself.
 # ---------------------------------------------------------------------------
-@test "auto_apply_rename_fixes renames my-notes.md to MY_NOTES.md" {
+@test "format_context produces human-readable summary and correction prompt includes raw JSON" {
   if [[ ! -x "$BINARY" ]]; then
     skip "gov-lsp binary not found at $BINARY"
   fi
@@ -307,40 +313,90 @@ _run_with_log_level() {
   ws="$(mktemp -d)"
   echo "# hello" > "$ws/my-notes.md"
 
-  # Build a minimal violation JSON that matches what lsp_check.py produces.
-  local violation_json
-  violation_json=$(printf '[{"file":"%s/my-notes.md","id":"markdown-naming-violation","message":"Markdown file must be SCREAMING_SNAKE_CASE","fix":{"type":"rename","value":"MY_NOTES.md"}}]' "$ws")
-
-  # Call auto_apply_rename_fixes directly through a minimal wrapper that
-  # sources governance_loop.sh's functions.
-  LAST_REMAINING_COUNT=""
-  bash -c "
-    source '$LIB_DIR/logging.sh'
-    LAST_VIOLATIONS=''
-    LAST_REMAINING_COUNT=''
-    auto_apply_rename_fixes() {
-      local violations=\"\$1\"
-      local remaining_list=()
-      while IFS= read -r obj; do
-        local file fix_type fix_val
-        file=\$(printf '%s' \"\$obj\" | jq -r '.file // \"\"')
-        fix_type=\$(printf '%s' \"\$obj\" | jq -r '.fix.type // \"\"')
-        fix_val=\$(printf '%s' \"\$obj\" | jq -r '.fix.value // \"\"')
-        if [[ \"\$fix_type\" == 'rename' && -n \"\$fix_val\" && -f \"\$file\" ]]; then
-          local new_path
-          new_path=\"\$(dirname \"\$file\")/\$fix_val\"
-          mv \"\$file\" \"\$new_path\" 2>/dev/null && echo \"RENAMED:\$file:\$new_path\" || remaining_list+=(\"\$obj\")
-        else
-          remaining_list+=(\"\$obj\")
-        fi
-      done < <(printf '%s' \"\$violations\" | jq -c '.[]' 2>/dev/null || true)
-    }
-    auto_apply_rename_fixes '$violation_json'
-  " 2>/dev/null
-
-  # After auto-apply, my-notes.md must NOT exist and MY_NOTES.md MUST exist.
-  local result_ok=0
-  [[ ! -f "$ws/my-notes.md" ]] && [[ -f "$ws/MY_NOTES.md" ]] && result_ok=1
+  # Collect the violation JSON using lsp_check.py (same path as the loop uses).
+  local violations
+  violations=$(LOG_LEVEL=info python3 "$LSP_CHECK" "$BINARY" "$POLICIES" "$ws" 2>/dev/null || true)
   rm -rf "$ws"
-  [ "$result_ok" -eq 1 ]
+
+  # violations must be non-empty and contain the expected fields.
+  [[ -n "$violations" ]]
+  [[ "$violations" == *"my-notes.md"* ]]
+  [[ "$violations" == *"fix"* ]]
+
+  # format_context (sourced from governance_loop.sh internals via bash -c) must
+  # produce a human-readable summary line for each violation.
+  # Use awk to extract the complete format_context function body robustly.
+  local format_context_body
+  format_context_body=$(awk '/^format_context\(\)/{found=1} found{print; if(/^}$/ && found>1){exit} found++}' "$GOVERNANCE_LOOP")
+  local summary
+  summary=$(bash -c "
+    source '$LIB_DIR/logging.sh'
+    ${format_context_body}
+    format_context '$violations'
+  " 2>/dev/null || true)
+
+  [[ "$summary" == *"Policy violations"* ]]
+  [[ "$summary" == *"my-notes.md"* ]]
+
+  # The correction prompt must include the raw JSON verbatim (not processed by mv).
+  local prompt
+  prompt="The following policy violations were found in the workspace.
+
+${summary}
+
+Structured violation data (JSON):
+${violations}
+
+Fix every violation. Apply all fixes, then stop."
+
+  # prompt must contain the structured JSON so the agent can act on it.
+  [[ "$prompt" == *'"fix"'* ]]
+  [[ "$prompt" == *"MY_NOTES.md"* ]]
+
+  # The prompt must NOT contain any shell mv invocation — the agent does the fix.
+  [[ "$prompt" != *" mv "* ]]
 }
+
+# ---------------------------------------------------------------------------
+# 16. tee pipeline: stdout streams inline AND file is written;
+#     PIPESTATUS[0] captures the correct exit code from the piped command,
+#     not from tee (which always exits 0).
+#
+# This test validates the 12-factor logging fix applied to test_headless_agent.sh:
+#   bash "$GOVERNANCE_LOOP" ... 2>&1 | tee "$AGENT_LOGS" || AGENT_EXIT=${PIPESTATUS[0]}
+# ---------------------------------------------------------------------------
+@test "tee pipeline streams to stdout AND writes to file; PIPESTATUS[0] captures correct exit code" {
+  local log_file
+  log_file="$(mktemp)"
+
+  # --- Part 1: output appears on stdout AND in the file ---
+  local captured_stdout
+  captured_stdout=$(bash -c 'echo "stdout line"; echo "stderr line" >&2' 2>&1 | tee "$log_file")
+
+  # stdout received the combined stream inline
+  [[ "$captured_stdout" == *"stdout line"* ]]
+  [[ "$captured_stdout" == *"stderr line"* ]]
+
+  # the file also contains the combined stream (for artifact upload)
+  [[ "$(cat "$log_file")" == *"stdout line"* ]]
+  [[ "$(cat "$log_file")" == *"stderr line"* ]]
+
+  rm -f "$log_file"
+
+  # --- Part 2: PIPESTATUS[0] captures the failing command's exit code, not tee's ---
+  local log_file2
+  log_file2="$(mktemp)"
+
+  local pipe_exit=0
+  # set -o pipefail makes the pipeline exit with the failing command's code,
+  # matching the behaviour in test_headless_agent.sh (which uses set -uo pipefail).
+  set -o pipefail
+  bash -c 'echo "some output"; exit 42' 2>&1 | tee "$log_file2" || pipe_exit=${PIPESTATUS[0]}
+  set +o pipefail
+
+  rm -f "$log_file2"
+
+  # tee exits 0; PIPESTATUS[0] must reflect the bash sub-shell's exit code (42)
+  [ "$pipe_exit" -eq 42 ]
+}
+
