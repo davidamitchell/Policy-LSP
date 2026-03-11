@@ -2,6 +2,8 @@
 
 > This file tracks **repo improvement** work — server features, tooling, and policy additions.
 > Use the `backlog-manager` skill when adding, refining, or reviewing items.
+>
+> Status values: `done` | `ready` | `needing_refinement` | `backlog` | `wont-do`
 
 ---
 
@@ -135,9 +137,9 @@ The LSP handler package currently has no tests. The handler is the integration p
 
 ## W-0009
 
-status: ready
+status: wont-do
 created: 2026-02-28
-updated: 2026-02-28
+updated: 2026-03-11
 
 ### Outcome
 
@@ -146,6 +148,17 @@ A TCP transport mode exists: running `gov-lsp --transport tcp --addr :7998` acce
 ### Context
 
 The spec calls for "modular expansion to TCP". This slice implements the architecture and the TCP variant, enabling integration with clients that do not support stdio (e.g., some remote agent frameworks).
+
+### Notes
+
+Evaluated 2026-03-11: none of the integration surfaces in this repo require TCP:
+
+- **Claude Code** runs via hooks (shell invocation, no transport).
+- **GitHub Copilot Agent** connects via stdio (`lspServers` in `.github/lsp.json`) in interactive mode only — confirmed NOT started in `--autopilot` mode (see "Confirmed Behaviors" in `.github/copilot-instructions.md`).
+- **Governance loop wrapper** (`scripts/governance_loop/governance_loop.sh`) uses `gov-lsp check --format json` (batch subprocess, not a persistent connection) or the LSP simulation in `lsp_check.py` (stdio).
+- **MCP server** runs over stdio.
+
+No planned consumer — not even a remote-agent framework currently in scope — requires TCP. Implementing TCP would add protocol-level complexity (connection lifecycle, port management, security) with no concrete consumer. If a future integration surface requires TCP, the `Transport` interface can be introduced at that time alongside the implementation.
 
 ---
 
@@ -185,7 +198,7 @@ Lowering the local setup barrier means contributors (human or AI) can open the r
 
 status: done
 created: 2026-02-28
-updated: 2026-03-01
+updated: 2026-03-11
 
 ### Outcome
 
@@ -195,13 +208,17 @@ updated: 2026-03-01
 
 GOV-LSP is an LSP server and MCP is a different protocol. Agents like Claude Code and GitHub Copilot Agent use MCP, not LSP, as their tool protocol. The `mcp` subcommand calls `engine.Evaluate()` directly — the wrapper is thin and adds no new dependencies.
 
+### Notes
+
+Updated 2026-03-11: the governance loop wrapper (`scripts/governance_loop/governance_loop.sh`, W-0032) closes the feedback loop this tool was designed to enable. The wrapper uses `gov-lsp check --format json` (batch mode) or LSP simulation (`lsp_check.py`) for real-time diagnostics, then injects violations as structured JSON into the agent's correction prompt. The MCP tools (`gov_check_file`, `gov_check_workspace`) remain the preferred path when the agent drives the loop itself (e.g. Claude Code or Copilot CLI in `--autopilot` mode with `--additional-mcp-config`). Remaining gap: explicit test coverage for the governance loop wrapper's fail-closed path (binary absent), violation surfacing, and clean-workspace silence (tracked as W-0036).
+
 ---
 
 ## W-0013
 
 status: backlog
 created: 2026-02-28
-updated: 2026-02-28
+updated: 2026-03-11
 
 ### Outcome
 
@@ -209,7 +226,7 @@ A `check_policy` LSAP cognitive capability exists: any LSAP-aware agent can send
 
 ### Context
 
-LSAP (Language Server Agent Protocol — `github.com/lsp-client/LSAP`, v1.0.0-alpha, MIT) is an orchestration layer that translates LSP's atomic editor operations into high-level "cognitive" interfaces for AI agents. Its Markdown-first response format is token-efficient and directly consumable by LLMs without JSON parsing.
+LSAP (Language Server Agent Protocol — `github.com/lsp-client/LSAP`, MIT) is an orchestration layer that translates LSP's atomic editor operations into high-level "cognitive" interfaces for AI agents. Its Markdown-first response format is token-efficient and directly consumable by LLMs without JSON parsing.
 
 GOV-LSP is a natural fit: its diagnostics are already semantically rich (natural language messages, typed fix suggestions). Wrapping them in LSAP's `check_policy` interface requires no changes to the engine or policy files.
 
@@ -217,7 +234,7 @@ See `research/lsap/README.md` for protocol analysis, comparison with MCP, and a 
 
 ### Notes
 
-Blocked on LSAP protocol stability (currently v1.0.0-alpha, Python SDK only, no Go SDK). Implement after W-0012 is done and the LSAP spec reaches a stable release or a Go SDK is available. The engine call and policy schema will not need to change — this is purely a new transport adapter.
+Blocked on LSAP protocol stability and Go SDK availability. Re-evaluated 2026-03-11: the LSAP Python SDK is now at 0.2.0 on PyPI (pre-stable; 0.x.x carries no stable API guarantee). There is no Go SDK for LSAP as of this date — Go support is provided only by running `gopls` as a language server via the Python client or CLI. Keeping as `backlog` (not `ready`). Revisit when either the LSAP spec reaches 1.0 or a native Go SDK is published. The engine call and policy schema will not need to change — this is purely a new transport adapter.
 
 ---
 
@@ -489,7 +506,7 @@ Two distinct network failure modes affect the Claude Code web sandbox. (1) `go m
 
 ### Notes
 
-Fix for (1): `export NO_PROXY=$(echo "${NO_PROXY:-}" | sed 's/,\*\.googleapis\.com//g; s/,\*\.google\.com//g'); export no_proxy="$NO_PROXY"` before `go mod download`. Fix for (2): `npm install -g global-agent` in `copilot-setup-steps.yml` or as a devcontainer step; then set `NODE_OPTIONS=--require global-agent/bootstrap` in `scripts/mcp-start.sh`. The vendoring approach (W-0014 dependency: `make vendor`) sidesteps (1) entirely and is the preferred day-to-day path.
+Fix for (1): `export NO_PROXY=$(echo "${NO_PROXY:-}" | sed 's/,\*\.googleapis\.com//g; s/,\*\.google\.com//g'); export no_proxy="$NO_PROXY"` before `go mod download`. Fix for (2): `npm install -g global-agent` in `copilot-setup-steps.yml` or as a devcontainer step; then set `NODE_OPTIONS=--require global-agent/bootstrap` in `scripts/mcp-start.sh`. Vendoring sidesteps issue (1) entirely and is the preferred day-to-day path. The `vendor/` directory was committed as part of the Session 6 work (see W-0030) — the `go mod vendor` step referenced here is already done and the directory exists in the repository. The original note's reference to "W-0014 dependency" was misleading (W-0014 is the agent skill, unrelated to vendoring); that coupling no longer applies.
 
 ---
 
@@ -526,3 +543,129 @@ Standardisation pass to remove AGENTS.md, CLAUDE.md, .claude/, scripts/sync-copi
 
 ### Notes
 
+
+---
+
+## W-0032
+
+status: done
+created: 2026-03-11
+updated: 2026-03-11
+
+### Outcome
+
+A production-quality governance loop wrapper exists at `scripts/governance_loop/governance_loop.sh` that orchestrates a headless Copilot CLI agent in a policy-governed workspace. It runs Phase 1 (initial agent task), then Phase 2 (convergence correction loop): collects violations via LSP simulation (`lsp_check.py`) or batch `gov-lsp check --format json` fallback, formats them as human-readable summary + raw JSON, injects them into a correction prompt, and runs the agent iteratively until zero violations or `MAX_ITER` is reached. Stuck-loop detection (SHA-256 fingerprint of the violation set across two consecutive iterations) prevents infinite loops. The loop is a feedback harness only — it never modifies workspace files; the agent applies all fixes.
+
+### Context
+
+The original governance loop concept (W-0012) required a lightweight IDE emulator to close the Policy-LSP enforcement feedback loop into agent context. Without it, the MCP and LSP enforcement tools existed but there was no orchestration layer to run the agent in a governed workspace, detect violations, and drive the agent towards convergence. The wrapper fills that gap: it provides the enforcement rails for a headless agent the way an IDE provides inline squiggles for a human developer.
+
+Key design decisions (see `docs/adr/0006-agent-loop-integration.md`):
+- The loop is a feedback harness, not a fix engine. The agent decides how to fix each violation.
+- `USE_LSP_SIM=1` (default) exercises the full LSP protocol path via `lsp_check.py`; `USE_LSP_SIM=0` uses batch check.
+- `scripts/governance_loop.sh` is a compatibility shim that delegates to the canonical implementation.
+- `tests/governance_loop.bats` covers logging helpers, workspace isolation, LSP simulation, and `tee` pipeline semantics (16 tests).
+
+### Notes
+
+Implemented across Sessions 8–10 (2026-03-05 to 2026-03-10). The `auto_apply_rename_fixes()` function was added then removed — renaming via shell was the wrong design. Remaining gaps in test coverage tracked as W-0036.
+
+---
+
+## W-0033
+
+status: ready
+created: 2026-03-11
+updated: 2026-03-11
+
+### Outcome
+
+The engine test suite includes property-based tests using Go's `testing/quick` package: for every input satisfying a policy's precondition (e.g. a `.md` filename that is not SCREAMING_SNAKE_CASE), the `deny` rule always fires; for every input not satisfying it (e.g. a valid SCREAMING_SNAKE_CASE `.md` filename), it never fires. At least one property test exists for each policy in `policies/`.
+
+### Context
+
+The current test suite uses example-based tests (specific filenames, specific violation messages). Example tests verify known cases but do not prove the rule is correct for the entire input space. Property-based tests define the invariant directly and use a random generator to find counterexamples — they catch edge cases the examples miss (e.g. files that look like they should pass but trigger a regex boundary, or files with unusual Unicode that break assumptions). `testing/quick` is already in the Go standard library; no new dependency is required.
+
+### Notes
+
+Start with `governance.filenames` — the precondition (non-SCREAMING_SNAKE_CASE `.md` filename) is straightforward to express as a generator. `testing/quick.Check` runs 100 random inputs by default; increase to 1000 for policy tests. For `governance.content`, the precondition is "file extension is `.go` and content does not start with `//` or `/*`" — use a custom `Generate` method on the input struct.
+
+---
+
+## W-0034
+
+status: ready
+created: 2026-03-11
+updated: 2026-03-11
+
+### Outcome
+
+`gov-lsp list-invariants` subcommand (or MCP tool `gov_list_invariants`) outputs a machine-readable JSON array of all policy rules known to the server. Each entry has at minimum: `"id"` (string, the violation ID from the `deny` rule), `"description"` (string, the human-readable message template), `"severity"` (string, `"error"` | `"warning"` | `"info"`), and `"file_pattern"` (string, the glob or extension the rule applies to). The output is valid JSON, stable across invocations for the same policy set, and suitable for piping into `jq`.
+
+### Context
+
+This is the interface the planned `Governance-Framework` repo will consume to query which invariants exist and cross-reference them against test scenarios. Without it, an external coverage tool must parse Rego source to discover rules — a fragile approach that breaks whenever rule structure changes. The `list-invariants` subcommand makes the rule set first-class: it is queryable, versionable, and auditable without source access.
+
+### Notes
+
+Implementation: evaluate each policy with a synthetic input that triggers no violations, then introspect the `deny` partial set metadata. Alternatively, add a companion `metadata` rule to each Rego file (e.g. `metadata := {"id": "...", "description": "...", ...}`) and collect those. The latter is more explicit and decoupled from evaluation. Write an ADR before implementation to choose the approach.
+
+---
+
+## W-0035
+
+status: backlog
+created: 2026-03-11
+updated: 2026-03-11
+
+### Outcome
+
+`gov-lsp coverage-report --scenarios <dir>` reads a directory of evaluation scenario files (JSON, same format as `davidamitchell/Agent-Evaluation` datasets) and reports: (1) which policy invariants are exercised by at least one scenario, (2) which invariants have no matching scenario (coverage gap), (3) a summary coverage percentage. Exit code 1 if any invariant is unexercised.
+
+### Context
+
+This closes the loop between Policy-LSP enforcement and Agent-Evaluation testing. The scenario files describe agent actions and expected outcomes. Cross-referencing them against the live invariant list (W-0034) reveals which policies have never been tested by a real agent scenario — a coverage gap that could hide silent enforcement failures. The intended consumer is the `davidamitchell/Governance-Framework` repo, which coordinates Policy-LSP, Agent-Evaluation, and the governance loop.
+
+### Notes
+
+Depends on W-0034 (invariant registry). The scenario file format must be agreed with `davidamitchell/Agent-Evaluation` before implementation — raise a cross-repo issue. Mark `ready` once W-0034 is done and the scenario format is stable.
+
+---
+
+## W-0036
+
+status: ready
+created: 2026-03-11
+updated: 2026-03-11
+
+### Outcome
+
+`tests/governance_loop.bats` includes explicit tests for three paths that are currently uncovered: (a) `gov-lsp` binary absent → the loop exits non-zero with a clear error message (fail-closed, not silent); (b) a workspace containing a policy-violating file → the loop collects violations and the correction prompt includes both the human-readable summary and the raw violation JSON; (c) a workspace with only compliant files → the loop exits 0 after Phase 1 with no correction prompt emitted (no noise).
+
+### Context
+
+The governance loop wrapper (W-0032) is the primary enforcement mechanism for headless agents. Its correctness properties are: fail-closed when the binary is absent (prevents silent bypass), accurate violation surfacing (agent receives all violations), and clean exit on a clean workspace (no false prompts that waste agent turns). These three properties are not currently covered by the 16 existing bats tests.
+
+### Notes
+
+The binary-absent test must verify exit code 2 (missing prerequisite) per the loop's documented exit code contract. The violation-surfacing test can use a synthetic workspace with a single `my-notes.md` file and assert the correction prompt contains `"my-notes.md"` and `"markdown-naming-violation"`. The clean-workspace test asserts the loop prints a convergence message and exits 0 without calling the agent a second time. Use `bats` helper functions (`assert_output`, `assert_failure`) for readable assertions.
+
+---
+
+## W-0037
+
+status: ready
+created: 2026-03-11
+updated: 2026-03-11
+
+### Outcome
+
+`docs/writing-policies.md` exists and covers: (1) the required `deny` rule shape (package namespace, `import future.keywords`, set-of-objects return type); (2) the required fields in each violation object (`id`, `message`) and the optional fields (`level`, `location`, `fix`); (3) how `input` is structured when the engine calls a policy (the `filename`, `extension`, `path`, `file_contents` fields); (4) how to write a `fix` object for the `codeAction` round-trip; (5) how to test the rule in isolation using `engine.New(fstest.MapFS{...})` before wiring it into the server; (6) a minimal end-to-end example: a complete Rego file + its Go unit test.
+
+### Context
+
+A developer wanting to add an organisation-specific policy currently has to read `internal/engine/rego.go`, `internal/engine/rego_test.go`, and an existing policy file to understand the required shape. There is no single document explaining the authoring contract. The guide makes Policy-LSP extensible without requiring the author to understand the LSP implementation, and is the primary reference for any `Governance-Framework` consumer that needs to add a repo-specific rule.
+
+### Notes
+
+Keep the guide focused on the authoring contract, not the LSP protocol or the engine internals. Link to `docs/adr/0003-rego-deny-schema.md` (the deny rule schema decision) and `docs/adr/0004-policies-as-runtime-directory.md` (why policies are a runtime directory). Include at least one worked example of a content-aware policy (file contents check) and one filename/path policy to demonstrate both `file_contents` and `filename` input fields.

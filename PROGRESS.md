@@ -446,3 +446,37 @@ when told it violated a naming policy — it does not need the shell to do it.
    contributors can't miss it.
 4. **Is this a pattern?** Yes — hardcoding specific fix types in orchestration shell code
    is a recurring temptation. The rule is: if the agent can do it, let the agent do it.
+
+---
+
+## 2026-03-11 — Backlog review and update
+
+**Task:** Full backlog review and update per issue requirements.
+
+**Changes to BACKLOG.md:**
+
+- **W-0009 (TCP transport):** Moved from `ready` → `wont-do`. Rationale: no current or planned consumer in the integration surface (Claude Code hooks, Copilot CLI autopilot, governance loop wrapper, MCP server) requires TCP. All paths use stdio or subprocess invocation. TCP would add connection lifecycle and security complexity with no concrete consumer. The `Transport` interface can be introduced alongside the implementation if a real consumer appears.
+
+- **W-0012 (MCP subcommand):** Added Notes section documenting that the governance loop wrapper (W-0032) closes the feedback loop the MCP tool was designed to enable. Identified remaining gap: governance loop test coverage (W-0036).
+
+- **W-0013 (LSAP):** Updated notes. LSAP Python SDK is now 0.2.0 on PyPI (pre-stable; not v1.0.0-alpha as originally noted). No Go SDK exists as of 2026-03-11. Keeping as `backlog`. Updated date.
+
+- **W-0029 (Claude Code network fix):** Removed ambiguous "W-0014 dependency: `make vendor`" from Notes. W-0014 is the agent skill — it has nothing to do with vendoring. The `vendor/` directory was committed in Session 6 (W-0030 scope); that dependency is resolved.
+
+- **W-0032 (new, done):** Governance loop wrapper. Documents the implementation in `scripts/governance_loop/governance_loop.sh`, its design intent (feedback harness, not fix engine), key decisions, and the 16 bats tests already in place.
+
+- **W-0033 (new, ready):** Property-based policy testing using `testing/quick`. Covers the full input space for each policy invariant, not just example cases.
+
+- **W-0034 (new, ready):** `gov-lsp list-invariants` subcommand / MCP tool. Machine-readable JSON inventory of all policy rules. The interface the `Governance-Framework` repo will consume.
+
+- **W-0035 (new, backlog):** Invariant coverage report. Given Agent-Evaluation scenario files, report which invariants are exercised. Depends on W-0034 and the Agent-Evaluation scenario format.
+
+- **W-0036 (new, ready):** Governance loop wrapper test coverage. Adds three currently-uncovered bats tests: binary-absent fail-closed, violation surfacing, clean-workspace silence.
+
+- **W-0037 (new, ready):** `docs/writing-policies.md` policy authoring guide. Explains the `deny` rule shape, input structure, `fix` object, and how to test a policy in isolation.
+
+**Mini-Retro:**
+1. **Did the process work?** Yes — the analysis was methodical. Checking the governance loop scripts, research notes, and running a web search on LSAP confirmed each decision.
+2. **What slowed down or went wrong?** The LSAP SDK version was incorrect in the original item (listed as "v1.0.0-alpha" when the current PyPI version is 0.2.0). The ambiguous W-0029 note required careful reading to decode — "W-0014 dependency" looks like a reference to the agent-skill backlog item, but the author intended "the vendoring work (now attributed to W-0030/Session 6) is a prerequisite".
+3. **What single change would prevent this next time?** When writing backlog notes, never reference another work item number to describe a dependency unless the reference is to an actual blocking backlog item. Prose descriptions ("the vendor directory committed in Session 6") are clearer than item numbers.
+4. **Is this a pattern?** The version-drift problem (LSAP "v1.0.0-alpha" vs actual 0.2.0) is a known pattern — external version claims in backlog notes age poorly. Adding an explicit "re-evaluated on <date>" line to the Notes section (as done here) is the correct remedy.
