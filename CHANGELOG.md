@@ -6,8 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- `BACKLOG.md`: W-0009 (TCP transport) moved to `wont-do` — no current or planned consumer in the integration surface requires TCP; all paths use stdio or subprocess invocation.
+- `BACKLOG.md`: W-0012 (MCP subcommand) notes updated — governance loop wrapper (W-0032) closes the feedback loop the MCP tool was designed to enable.
+- `BACKLOG.md`: W-0013 (LSAP) notes updated — SDK is now 0.2.0 on PyPI (pre-stable), still no Go SDK; item remains `backlog`.
+- `BACKLOG.md`: W-0029 notes clarified — removed ambiguous "W-0014 dependency: `make vendor`" reference; vendor directory was committed in Session 6.
+
 ### Added
-- `tests/governance_loop.bats` test 15: verifies that the correction loop injects the full violation JSON into the agent prompt and that no `mv` call appears in the prompt; the agent is the fix engine.
+- `BACKLOG.md` W-0032 (done): governance loop wrapper — `scripts/governance_loop/governance_loop.sh` orchestrates a headless Copilot CLI agent in a policy-governed workspace.
+- `BACKLOG.md` W-0033 (ready): property-based policy testing using `testing/quick`.
+- `BACKLOG.md` W-0034 (ready): `gov-lsp list-invariants` — machine-readable JSON inventory of all policy rules.
+- `BACKLOG.md` W-0035 (backlog): invariant coverage report against Agent-Evaluation scenario files.
+- `BACKLOG.md` W-0036 (ready): governance loop wrapper test coverage for fail-closed, violation surfacing, and clean-workspace paths.
+- `BACKLOG.md` W-0037 (ready): `docs/writing-policies.md` policy authoring guide.
+
+
 - `tests/governance_loop.bats` test 16: verifies that the `tee` pipeline in `test_headless_agent.sh` streams governance loop output to stdout AND writes to the artifact file simultaneously, and that `${PIPESTATUS[0]}` correctly captures the exit code of the piped command rather than `tee`.
 
 ### Removed
